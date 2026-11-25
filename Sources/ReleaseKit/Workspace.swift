@@ -1,0 +1,157 @@
+import Foundation
+
+public enum StoreProvider: String, Codable, Sendable, Hashable {
+    case apple, google
+
+    public var title: String { self == .apple ? "Apple" : "Google Play" }
+}
+
+/// A person's sign-in with a store (an Apple ID, a Google account). It holds
+/// the developer teams that person reaches.
+public struct Account: Codable, Identifiable, Hashable, Sendable {
+    public var id = UUID()
+    public var provider: StoreProvider
+    public var name: String
+    public var email: String?
+    public var teams: [Team] = []
+
+    public init(provider: StoreProvider, name: String, email: String? = nil) {
+        self.provider = provider
+        self.name = name
+        self.email = email
+    }
+}
+
+/// One developer team (Apple) or developer account (Play), and how Release
+/// Desk reaches it. The secret part is in the Keychain under `secretAccount`.
+public struct Team: Codable, Identifiable, Hashable, Sendable {
+    public var id = UUID()
+    public var name: String
+    public var teamID: String?
+    public var credential: Credential
+
+    public init(name: String, teamID: String?, credential: Credential) {
+        self.name = name
+        self.teamID = teamID
+        self.credential = credential
+    }
+}
+
+public enum Credential: Codable, Hashable, Sendable {
+    case appStoreConnectKey(keyID: String, issuerID: String)
+    case playServiceAccount(email: String)
+
+    public var secretAccount: String {
+        switch self {
+        case .appStoreConnectKey(let keyID, _): "asc:\(keyID)"
+        case .playServiceAccount(let email): "play:\(email)"
+        }
+    }
+
+    public var summary: String {
+        switch self {
+        case .appStoreConnectKey(let keyID, _): "API key \(keyID)"
+        case .playServiceAccount(let email): email
+        }
+    }
+}
+
+public enum ProjectKind: String, Codable, Sendable { case flutter }
+
+/// A store app tied to the source folder it is built from, with the recipe
+/// the pipeline follows for it.
+public struct ProjectLink: Codable, Identifiable, Hashable, Sendable {
+    public var id = UUID()
+    public var appID: String
+    public var path: String
+    public var kind: ProjectKind = .flutter
+    public var recipe = IOSRecipe()
+
+    public init(appID: String, path: String) {
+        self.appID = appID
+        self.path = path
+    }
+
+    public var url: URL { URL(fileURLWithPath: path) }
+}
+
+public struct IOSRecipe: Codable, Hashable, Sendable {
+    /// Relative to the project folder. Generated per run when missing.
+    public var exportOptions = "ios/ExportOptions.plist"
+    public var entitlements = "ios/Runner/Runner.entitlements"
+    /// Archive unsigned, ad-hoc sign, then let cloud signing make the real
+    /// signature at export. Needed by teams with no registered devices.
+    public var cloudSigning = true
+    public var writeBuildNumber = true
+    public var groupIDs: [String] = []
+    public var submitForReview = true
+    public var locales = ["ar-SA", "en-US"]
+
+    public init() {}
+}
+
+public struct RunRecord: Codable, Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var appID: String
+    public var appName: String
+    public var version: String
+    public var build: Int
+    public var started: Date
+    public var finished: Date?
+    public var outcome: String
+    public var failedStep: String?
+    public var logPath: String?
+
+    public init(id: UUID, appID: String, appName: String, version: String, build: Int, started: Date, finished: Date?,
+                outcome: String, failedStep: String?, logPath: String?) {
+        self.id = id
+        self.appID = appID
+        self.appName = appName
+        self.version = version
+        self.build = build
+        self.started = started
+        self.finished = finished
+        self.outcome = outcome
+        self.failedStep = failedStep
+        self.logPath = logPath
+    }
+}
+
+public struct Workspace: Codable, Sendable {
+    public var accounts: [Account] = []
+    public var links: [ProjectLink] = []
+    public var runs: [RunRecord] = []
+
+    public init() {}
+
+    public func link(for appID: String) -> ProjectLink? { links.first { $0.appID == appID } }
+
+    public func team(_ id: UUID) -> (Account, Team)? {
+        for a in accounts { if let t = a.teams.first(where: { $0.id == id }) { return (a, t) } }
+        return nil
+    }
+}
+
+public enum WorkspaceStore {
+    public static var folder: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Release Desk", isDirectory: true)
+    }
+    static var file: URL { folder.appendingPathComponent("workspace.json") }
+    public static var logs: URL { folder.appendingPathComponent("Logs", isDirectory: true) }
+
+    public static func load() -> Workspace {
+        guard let data = try? Data(contentsOf: file) else { return Workspace() }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return (try? dec.decode(Workspace.self, from: data)) ?? Workspace()
+    }
+
+    public static func save(_ ws: Workspace) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        enc.dateEncodingStrategy = .iso8601
+        try enc.encode(ws).write(to: file, options: .atomic)
+    }
+}

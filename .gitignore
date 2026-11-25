@@ -1,0 +1,6 @@
+.build/
+build/
+.swiftpm/
+*.p8
+*.json.key
+.DS_Store
