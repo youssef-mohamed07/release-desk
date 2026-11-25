@@ -125,13 +125,22 @@ public enum ReleaseError: LocalizedError, Sendable {
             let msg = SecCopyErrorMessageString(s, nil) as String? ?? "status \(s)"
             return "Keychain: \(msg)"
         case .api(let status, let path, let messages):
-            return "App Store Connect \(status) on \(path): \(messages.joined(separator: "; "))"
+            let google = path.contains("googleapis.com") || path.contains("androidpublisher") || path == "oauth token"
+            let shown = URL(string: path).flatMap { $0.host != nil ? $0.path : nil } ?? path
+            return "\(google ? "Google Play" : "App Store Connect") \(status) on \(shown): \(messages.joined(separator: "; "))"
         case .network(let m): return m
         case .command(let c, let code, let tail):
             return "\(c) failed (exit \(code))" + (tail.isEmpty ? "" : "\n\(tail)")
         case .precondition(let m): return m
         case .cancelled: return "Cancelled"
         }
+    }
+
+    /// Google answers 403 "The caller does not have permission" when the
+    /// service account is not a user of the Play Console account.
+    public var isPlayPermission: Bool {
+        if case .api(403, let path, _) = self { return path.contains("googleapis.com") }
+        return false
     }
 
     public var httpStatus: Int? {

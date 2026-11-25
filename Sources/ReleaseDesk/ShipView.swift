@@ -14,7 +14,11 @@ struct ShipView: View {
             if let run = model.latestRun(for: appID), !composing {
                 LaunchConsole(run: run, onNew: { composing = true })
             } else if let link = model.workspace.link(for: appID) {
-                ShipComposer(app: app, link: link, onLaunch: { composing = false })
+                if app.isPlay {
+                    PlayShipComposer(app: app, link: link, onLaunch: { composing = false })
+                } else {
+                    ShipComposer(app: app, link: link, onLaunch: { composing = false })
+                }
             } else {
                 LinkProjectPanel(app: app)
             }
@@ -32,6 +36,7 @@ struct LinkProjectPanel: View {
     @State private var candidates: [FlutterProject] = []
     @State private var scanning = true
     @State private var choosing = false
+    @State private var path = ""
     @State private var error: String?
 
     var body: some View {
@@ -41,20 +46,20 @@ struct LinkProjectPanel: View {
                 AppIcon(url: model.iconURL(app.id, size: 512), name: app.name, size: 96)
                 VStack(spacing: 8) {
                     Text("Where is \(app.name) built from?").font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick the Flutter project for \(app.bundleID). Release Desk remembers it and builds from it every time.")
-                        .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
+                    Text("Pick the Flutter project for \(app.bundleID). Release Desk remembers it, and links the same app on the other store too.")
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 540)
                 }
                 VStack(spacing: 10) {
                     if scanning {
-                        HStack { ProgressView().controlSize(.small); Text("Looking in ~/Developer…").foregroundStyle(.secondary) }
+                        HStack { ProgressView().controlSize(.small); Text("Looking through your project folders…").foregroundStyle(.secondary) }
                     }
                     ForEach(candidates, id: \.root) { p in
-                        Button { model.link(appID: app.id, path: p.root.path) } label: {
+                        Button { use(p.root) } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: "folder.fill").font(.title2).foregroundStyle(Palette.cyan)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text((p.root.path as NSString).abbreviatingWithTildeInPath).font(.body.monospaced())
-                                    Text("\(p.name) · \(p.version)+\(p.buildNumber) · builds \(p.iosBundleID ?? "?")")
+                                    Text("\(p.name) · \(p.version)+\(p.buildNumber) · iOS \(p.iosBundleID ?? "–") · Android \(p.androidPackage ?? "–")")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -62,53 +67,92 @@ struct LinkProjectPanel: View {
                                 Image(systemName: "arrow.right")
                             }
                             .padding(14)
-                            .frame(width: 560)
+                            .frame(width: 600)
                             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
                         }
                         .buttonStyle(.plain)
                     }
                     if !scanning && candidates.isEmpty {
-                        Text("No Flutter project in ~/Developer builds \(app.bundleID).").foregroundStyle(.secondary)
+                        Text("No Flutter project in your project folders builds \(app.bundleID).").foregroundStyle(.secondary)
                     }
-                    Button("Choose another folder…") { choosing = true }.buttonStyle(.glass).padding(.top, 6)
+                    HStack(spacing: 8) {
+                        TextField("Path", text: $path, prompt: Text("Paste or type a folder path"))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.callout.monospaced())
+                            .frame(width: 380)
+                            .onSubmit { use(URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)) }
+                        Button("Use") { use(URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)) }
+                            .disabled(path.isEmpty)
+                        Button("Choose…") { choosing = true }
+                    }
+                    .buttonStyle(.glass)
+                    .padding(.top, 6)
                     if let error { Text(error).foregroundStyle(Palette.ember).font(.callout) }
                 }
             }
             .padding(40)
         }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.folder]) { result in
-            guard case .success(let url) = result else { return }
-            do {
-                let p = try FlutterProject.inspect(url)
-                if let b = p.iosBundleID, b != app.bundleID {
-                    error = "That project builds \(b), not \(app.bundleID)."
-                } else {
-                    model.link(appID: app.id, path: url.path)
-                }
-            } catch { self.error = error.localizedDescription }
+            if case .success(let url) = result { use(url) }
         }
         .task {
-            let bundle = app.bundleID
-            candidates = await Task.detached { findProjects(building: bundle) }.value
+            let id = app.bundleID
+            let roots = ProjectScanner.roots(model: model)
+            candidates = await Task.detached { ProjectScanner.projects(in: roots).filter { $0.iosBundleID == id || $0.androidPackage == id } }.value
             scanning = false
         }
     }
+
+    private func use(_ url: URL) {
+        do {
+            let p = try FlutterProject.inspect(url)
+            let builds = [p.iosBundleID, p.androidPackage].compactMap { $0 }
+            if !builds.isEmpty, !builds.contains(app.bundleID) {
+                error = "That project builds \(builds.joined(separator: " and ")), not \(app.bundleID)."
+            } else {
+                model.link(appID: app.id, path: url.path)
+            }
+        } catch { self.error = error.localizedDescription }
+    }
 }
 
-/// Flutter projects under ~/Developer whose iOS target is `bundle`.
-nonisolated func findProjects(building bundle: String) -> [FlutterProject] {
-    let fm = FileManager.default
-    let dev = fm.homeDirectoryForCurrentUser.appendingPathComponent("Developer")
-    var out: [FlutterProject] = []
-    for top in (try? fm.contentsOfDirectory(at: dev, includingPropertiesForKeys: [.isDirectoryKey])) ?? [] {
-        for sub in ["", "mobile", "app", "apps/mobile", "flutter"] {
-            let root = sub.isEmpty ? top : top.appendingPathComponent(sub)
-            guard fm.fileExists(atPath: root.appendingPathComponent("pubspec.yaml").path),
-                  let p = try? FlutterProject.inspect(root), p.iosBundleID == bundle else { continue }
-            out.append(p)
+/// Where Flutter projects are looked for: ~/Developer, the folders of
+/// projects already linked, and any folder added by hand.
+enum ProjectScanner {
+    @MainActor
+    static func roots(model: AppModel) -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var roots = [home.appendingPathComponent("Developer")]
+        for l in model.workspace.links {
+            // A linked project at <root>/<app> or <root>/<repo>/mobile adds <root>.
+            var u = l.url.deletingLastPathComponent()
+            if ["mobile", "app", "flutter"].contains(l.url.lastPathComponent) { u = u.deletingLastPathComponent() }
+            if u.path != home.path, !roots.contains(u) { roots.append(u) }
         }
+        for extra in UserDefaults.standard.stringArray(forKey: "projectRoots") ?? [] {
+            let u = URL(fileURLWithPath: extra)
+            if !roots.contains(u) { roots.append(u) }
+        }
+        return roots
     }
-    return out.sorted { $0.root.path.count < $1.root.path.count }
+
+    nonisolated static func projects(in roots: [URL]) -> [FlutterProject] {
+        let fm = FileManager.default
+        var out: [FlutterProject] = []
+        var seen = Set<String>()
+        for dir in roots {
+            for top in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey])) ?? [] {
+                for sub in ["", "mobile", "app", "apps/mobile", "flutter"] {
+                    let root = sub.isEmpty ? top : top.appendingPathComponent(sub)
+                    guard !seen.contains(root.path), fm.fileExists(atPath: root.appendingPathComponent("pubspec.yaml").path),
+                          let p = try? FlutterProject.inspect(root), p.iosBundleID != nil || p.androidPackage != nil else { continue }
+                    seen.insert(root.path)
+                    out.append(p)
+                }
+            }
+        }
+        return out.sorted { $0.root.path.count < $1.root.path.count }
+    }
 }
 
 // MARK: - Compose
@@ -169,6 +213,7 @@ struct ShipComposer: View {
         }
         .background(alignment: .top) { AmbientGlow(url: model.iconURL(app.id), intensity: 0.45).frame(height: 460) }
         .task(id: link.path) { await load() }
+        .onChange(of: notes) { Drafts.save(notes, for: app.id) }
         .alert(rehearsal ? "Rehearse \(app.name) \(version) (\(build))?" : "Ship \(app.name) \(version) (\(build))?", isPresented: $confirming) {
             Button(rehearsal ? "Rehearse" : "Ship to TestFlight") { launch() }
             Button("Cancel", role: .cancel) {}
@@ -214,7 +259,7 @@ struct ShipComposer: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Build").font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 6) {
-                        Text("\(build)")
+                        Text(verbatim: "\(build)")
                             .font(.system(size: 30, weight: .bold, design: .rounded).monospacedDigit())
                             .contentTransition(.numericText(value: Double(build)))
                             .frame(minWidth: 44, alignment: .leading)
@@ -426,6 +471,7 @@ struct ShipComposer: View {
         submitForReview = link.recipe.submitForReview
         let remembered = Set(link.recipe.groupIDs).intersection(state.groups.map(\.id))
         selectedGroups = remembered.isEmpty ? Set(state.groups.map(\.id)) : remembered
+        notes = Drafts.load(for: app.id)
         ready = true
         if let latest, let c = try? model.client(forApp: app.id) {
             let locs = (try? await c.betaLocalizations(buildID: latest.id)) ?? []
@@ -450,6 +496,7 @@ struct ShipComposer: View {
                                submitForReview: submitForReview, rehearsal: rehearsal)
         do {
             _ = try model.launch(plan)
+            if !rehearsal { Drafts.clear(for: app.id) }
             onLaunch()
         } catch {
             launchError = error.localizedDescription

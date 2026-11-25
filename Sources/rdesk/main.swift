@@ -21,6 +21,29 @@ func fail(_ message: String) -> Never {
 guard let command = args.first else {
     fail("usage: rdesk apps|builds|groups|versions|team --key-id ID --issuer ISSUER [--app APP_ID] [--key-file PATH]")
 }
+// Google Play: rdesk play-apps|play-tracks --json SERVICE_ACCOUNT.json [--package PKG]
+if command.hasPrefix("play-") {
+    guard let path = option("--json"), let json = try? String(contentsOfFile: path, encoding: .utf8) else { fail("--json SERVICE_ACCOUNT.json is required") }
+    do {
+        let play = PlayClient(account: try ServiceAccount(json: json))
+        switch command {
+        case "play-apps":
+            guard let apps = try await play.searchApps() else { fail("The Play Developer Reporting API is not enabled for this service account's project.") }
+            for a in apps { print("\(a.packageName)\t\(a.name)") }
+        case "play-tracks":
+            guard let pkg = option("--package") else { fail("--package is required") }
+            let o = try await play.overview(package: pkg)
+            print("title: \(o.details.title ?? "?") · language \(o.details.defaultLanguage ?? "?")")
+            for t in o.tracks {
+                print("\(t.track):")
+                for r in t.releases { print("  \(r.name)\t\(r.versionCodes.joined(separator: ","))\t\(r.status)\(r.userFraction.map { " \(Int($0 * 100))%" } ?? "")") }
+            }
+        default: fail("unknown command \(command)")
+        }
+    } catch { fail(error.localizedDescription) }
+    exit(0)
+}
+
 guard let keyID = option("--key-id"), let issuer = option("--issuer") else { fail("--key-id and --issuer are required") }
 let keyPath = option("--key-file") ?? NSString(string: "~/.appstoreconnect/private_keys/AuthKey_\(keyID).p8").expandingTildeInPath
 guard let pem = try? String(contentsOfFile: keyPath, encoding: .utf8) else { fail("cannot read \(keyPath)") }

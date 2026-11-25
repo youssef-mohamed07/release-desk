@@ -55,6 +55,10 @@ struct LaunchConsole: View {
                     PhaseBadge(run: run)
                     if run.plan.rehearsal { Chip(text: "Rehearsal", symbol: "theatermasks") }
                     ForEach(run.plan.groups) { g in Chip(text: g.name, symbol: g.isInternal ? "building.2" : "globe") }
+                    if let t = run.plan.play {
+                        Chip(text: "\(t.track) · \(t.status == "inProgress" ? "\(Int((t.userFraction ?? 0) * 100))%" : t.status)", symbol: "road.lanes")
+                    }
+                    if run.plan.startAt != nil { Chip(text: "Resumed", symbol: "arrow.clockwise") }
                     if run.plan.submitForReview && run.plan.groups.contains(where: { !$0.isInternal }) && !run.plan.rehearsal {
                         Chip(text: "Beta review", symbol: "checkmark.shield")
                     }
@@ -88,9 +92,18 @@ struct LaunchConsole: View {
                         .buttonStyle(.glass).controlSize(.large)
                 }
                 Button { NSWorkspace.shared.activateFileViewerSelecting([run.ipa ?? run.logFile]) } label: {
-                    Label(run.ipa != nil ? "Show IPA" : "Show log", systemImage: "folder")
+                    Label(run.ipa == nil ? "Show log" : (run.plan.platform == .ios ? "Show IPA" : "Show bundle"), systemImage: "folder")
                 }
                 .buttonStyle(.glass).controlSize(.large)
+                if run.phase == .failed || run.phase == .cancelled {
+                    Button {
+                        do { _ = try model.resume(run) } catch { model.alert = error.localizedDescription }
+                    } label: {
+                        Label(run.plan.platform == .ios && run.step(.upload).state == .done ? "Resume from Apple processing" : "Try again",
+                              systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.glass).controlSize(.large)
+                }
                 Button(action: onNew) { Label("New release", systemImage: "plus") }
                     .buttonStyle(.glassProminent).controlSize(.large)
             }
@@ -371,6 +384,8 @@ struct AnimatedMesh: View {
                 .animation(.easeInOut(duration: 1.2), value: palette)
         }
         .overlay(Color.black.opacity(0.15))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func points(_ t: Double) -> [SIMD2<Float>] {

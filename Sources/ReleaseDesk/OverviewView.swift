@@ -13,7 +13,7 @@ struct OverviewView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     header
                     if !model.runs.filter({ $0.phase == .running }).isEmpty { inFlight }
-                    ForEach(model.appleTeams, id: \.team.id) { pair in
+                    ForEach(model.allTeams, id: \.team.id) { pair in
                         teamGrid(pair.account, pair.team)
                     }
                 }
@@ -33,7 +33,7 @@ struct OverviewView: View {
 
     private var header: some View {
         let appsCount = model.teams.values.reduce(0) { $0 + $1.apps.count }
-        let teamCount = model.appleTeams.count
+        let teamCount = model.allTeams.count
         let testing = model.apps.values.filter { $0.builds.first?.externalState == "IN_BETA_TESTING" || $0.builds.first?.internalState == "IN_BETA_TESTING" }.count
         return VStack(alignment: .leading, spacing: 6) {
             Text(greeting).font(.system(size: 30, weight: .bold, design: .rounded))
@@ -124,7 +124,16 @@ struct AppCard: View {
                             .help("Shipping \(run.plan.version) (\(run.plan.build))")
                     }
                 }
-                if let latest {
+                if app.isPlay {
+                    HStack {
+                        Text(model.apps[app.id]?.tracks.flatMap(\.releases).max(by: { $0.maxCode < $1.maxCode })?.name ?? " ")
+                            .font(.system(.callout, design: .rounded).weight(.semibold).monospacedDigit())
+                        Spacer()
+                        PlayMark(size: 12)
+                    }
+                    TrackStrip(tracks: model.apps[app.id]?.tracks ?? [], error: model.apps[app.id]?.error)
+                        .frame(minHeight: 34, alignment: .top)
+                } else if let latest {
                     HStack(alignment: .center) {
                         Text("\(latest.version) (\(latest.number))").font(.system(.callout, design: .rounded).weight(.semibold).monospacedDigit())
                         Spacer()
@@ -225,6 +234,7 @@ struct BuildLane: View {
 struct TeamView: View {
     let teamID: UUID
     @Environment(AppModel.self) private var model
+    @State private var confirmRemove = false
 
     var body: some View {
         if let (account, team) = model.workspace.team(teamID) {
@@ -239,15 +249,21 @@ struct TeamView: View {
                         .frame(width: 56, height: 56)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(team.name).font(.system(size: 26, weight: .bold, design: .rounded))
-                            Text([team.teamID.map { "Team \($0)" }, team.credential.summary, account.name].compactMap { $0 }.joined(separator: " · "))
+                            Text(Array(NSOrderedSet(array: [team.teamID.map { "Team \($0)" }, team.credential.summary, account.name]
+                                .compactMap { $0 }.filter { s in !team.credential.summary.hasSuffix(s) || s == team.credential.summary })) .compactMap { $0 as? String }
+                                .joined(separator: " · "))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button { Task { await model.refresh(team: team) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                             .buttonStyle(.glass)
                             .disabled(state?.loading == true)
+                        Button(role: .destructive) { confirmRemove = true } label: { Label("Remove", systemImage: "trash") }
+                            .buttonStyle(.glass)
+                            .help("Forget this team and delete its key from the Keychain")
                     }
                     if let e = state?.error { Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    if team.credential.isGoogle { PackagesEditor(team: team) }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 270, maximum: 400), spacing: 14)], spacing: 14) {
                         ForEach(state?.apps ?? []) { AppCard(app: $0) }
                     }
@@ -255,6 +271,11 @@ struct TeamView: View {
                 .padding(32)
             }
             .background(alignment: .top) { AmbientGlow(url: nil).frame(height: 380) }
+            .confirmationDialog("Remove \(team.name)?", isPresented: $confirmRemove) {
+                Button("Remove team and its key", role: .destructive) { model.remove(team: team) }
+            } message: {
+                Text("Release Desk forgets this team, its apps' project folders, and deletes its key from your Keychain. Nothing changes on the store.")
+            }
         } else {
             ContentUnavailableView("Team not found", systemImage: "questionmark.folder")
         }
@@ -282,7 +303,9 @@ struct WelcomeView: View {
                     ProviderTile(title: "App Store Connect", subtitle: "API key (.p8) per team", symbol: "apple.logo", enabled: true) {
                         model.connecting = .apple
                     }
-                    ProviderTile(title: "Google Play", subtitle: "Service account per developer account", symbol: nil, enabled: false) {}
+                    ProviderTile(title: "Google Play", subtitle: "Service account per developer account", symbol: nil, enabled: true) {
+                        model.connecting = .google
+                    }
                 }
                 Text("Keys go to your Keychain. Nothing leaves this Mac except calls to Apple and Google.")
                     .font(.callout).foregroundStyle(.tertiary)
@@ -330,5 +353,36 @@ struct ProviderTile: View {
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.6)
         .onHover { hover = $0 }
+    }
+}
+
+/// The Play apps a developer account shows, by package name.
+struct PackagesEditor: View {
+    let team: Team
+    @Environment(AppModel.self) private var model
+    @State private var adding = ""
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus.app").foregroundStyle(.secondary)
+            TextField("Add an app by package name", text: $adding, prompt: Text("Add an app by package name, e.g. com.example.app"))
+                .textFieldStyle(.plain)
+                .font(.callout.monospaced())
+                .onSubmit(add)
+            Button("Add", action: add).buttonStyle(.glass).disabled(!adding.contains("."))
+        }
+        .card(radius: 14, padding: 12)
+        .contextMenu {
+            ForEach(team.packages ?? [], id: \.self) { p in
+                Button("Remove \(p)") { model.setPackages((team.packages ?? []).filter { $0 != p }, team: team) }
+            }
+        }
+    }
+
+    private func add() {
+        let p = adding.trimmingCharacters(in: .whitespaces)
+        guard p.contains("."), !(team.packages ?? []).contains(p) else { return }
+        model.setPackages((team.packages ?? []) + [p], team: team)
+        adding = ""
     }
 }

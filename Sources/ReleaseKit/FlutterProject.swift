@@ -10,6 +10,8 @@ public struct FlutterProject: Sendable, Hashable {
     public let androidPackage: String?
     public let hasExportOptions: Bool
     public let hasEntitlements: Bool
+    /// android/key.properties exists, so release builds use an upload key.
+    public let hasUploadKey: Bool
 
     public var pubspec: URL { root.appendingPathComponent("pubspec.yaml") }
 
@@ -40,7 +42,8 @@ public struct FlutterProject: Sendable, Hashable {
         return FlutterProject(root: root, name: name, version: version, buildNumber: number, iosBundleID: bundle,
                               androidPackage: package,
                               hasExportOptions: fm.fileExists(atPath: root.appendingPathComponent(recipe.exportOptions).path),
-                              hasEntitlements: fm.fileExists(atPath: root.appendingPathComponent(recipe.entitlements).path))
+                              hasEntitlements: fm.fileExists(atPath: root.appendingPathComponent(recipe.entitlements).path),
+                              hasUploadKey: fm.fileExists(atPath: root.appendingPathComponent("android/key.properties").path))
     }
 
     /// Rewrites `version:` in pubspec.yaml, keeping the rest of the file.

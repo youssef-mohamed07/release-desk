@@ -8,7 +8,9 @@ struct AppDetailView: View {
     @State private var selectedBuild: ASCBuild?
 
     var body: some View {
-        if let app = model.app(appID) {
+        if let app = model.app(appID), app.isPlay {
+            PlayAppDetailView(app: app)
+        } else if let app = model.app(appID) {
             let state = model.apps[appID] ?? AppState()
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {

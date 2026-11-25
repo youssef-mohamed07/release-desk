@@ -5,7 +5,7 @@ import SwiftUI
 @main
 struct ReleaseDeskApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var model = AppModel()
+    @State private var model = AppModel.shared
 
     var body: some Scene {
         Window("Release Desk", id: "main") {
@@ -18,8 +18,10 @@ struct ReleaseDeskApp: App {
         .defaultSize(width: 1380, height: 880)
         .commands {
             CommandGroup(after: .newItem) {
+                Button("Go to…") { model.palette.toggle() }.keyboardShortcut("k")
+                Divider()
                 Button("Connect App Store Connect…") { model.connecting = .apple }
-                    .keyboardShortcut("k", modifiers: [.command, .shift])
+                Button("Connect Google Play…") { model.connecting = .google }
             }
             CommandMenu("Release") {
                 Button("Refresh") { Task { await model.refreshAll() } }.keyboardShortcut("r")
@@ -44,6 +46,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// A key file opened with Release Desk (double-click, Dock drop, `open -a`).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { ["p8", "json"].contains($0.pathExtension.lowercased()) }) else { return }
+        MainActor.assumeIsolated {
+            let model = AppModel.shared
+            model.connecting = nil
+            model.droppedKey = url
+            DispatchQueue.main.async { model.connecting = url.pathExtension.lowercased() == "p8" ? .apple : .google }
+        }
+    }
 }
 
 struct RootView: View {
@@ -68,6 +81,19 @@ struct RootView: View {
         }
         .sheet(item: $model.connecting) { provider in
             ConnectSheet(provider: provider)
+        }
+        .overlay {
+            if model.palette {
+                CommandPalette().transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: model.palette)
+        // Drop a .p8 or a service account .json anywhere to connect it.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard model.connecting == nil, let url = urls.first(where: { ["p8", "json"].contains($0.pathExtension.lowercased()) }) else { return false }
+            model.droppedKey = url
+            model.connecting = url.pathExtension.lowercased() == "p8" ? .apple : .google
+            return true
         }
         .alert("Release Desk", isPresented: Binding(get: { model.alert != nil }, set: { if !$0 { model.alert = nil } })) {
             Button("OK") { model.alert = nil }

@@ -3,6 +3,14 @@ import Observation
 
 public enum StepID: String, CaseIterable, Sendable, Codable {
     case prepare, archive, sign, export, upload, processing, notes, groups, review, live
+    case bundle, checkSigning, playRelease
+
+    public static func steps(for platform: Platform) -> [StepID] {
+        switch platform {
+        case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .groups, .review, .live]
+        case .android: [.prepare, .bundle, .checkSigning, .playRelease]
+        }
+    }
 
     public var title: String {
         switch self {
@@ -16,6 +24,9 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .groups: "TestFlight groups"
         case .review: "Beta review"
         case .live: "Live for testers"
+        case .bundle: "Build app bundle"
+        case .checkSigning: "Check signing"
+        case .playRelease: "Upload & release"
         }
     }
 
@@ -31,6 +42,9 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .groups: "person.3"
         case .review: "checkmark.shield"
         case .live: "airplane.departure"
+        case .bundle: "shippingbox"
+        case .checkSigning: "signature"
+        case .playRelease: "arrow.up.forward.app"
         }
     }
 }
@@ -61,8 +75,28 @@ public struct LogLine: Identifiable, Sendable, Hashable {
     public let text: String
 }
 
+public enum Platform: String, Codable, Sendable { case ios, android }
+
+/// Where an Android release goes on Play.
+public struct PlayTarget: Sendable, Hashable {
+    public var track: String
+    /// completed, inProgress (staged rollout), draft or halted.
+    public var status: String
+    public var userFraction: Double?
+
+    public init(track: String, status: String, userFraction: Double?) {
+        self.track = track
+        self.status = status
+        self.userFraction = userFraction
+    }
+}
+
 /// Everything one release run needs, decided before it starts.
 public struct ReleasePlan: Sendable {
+    public var platform: Platform = .ios
+    public var play: PlayTarget?
+    /// Resume: skip the steps before this one (iOS: only `.processing`).
+    public var startAt: StepID?
     public var app: ASCApp
     public var projectRoot: URL
     public var version: String
@@ -105,20 +139,25 @@ public final class ReleaseRun: Identifiable {
     public private(set) var finished: Date?
     public private(set) var failure: String?
     public private(set) var buildID: String?
+    /// The .ipa or .aab this run built.
     public private(set) var ipa: URL?
+    public private(set) var playVersionCode: String?
     public private(set) var current: StepID?
     public let logFile: URL
 
     @ObservationIgnored public var onFinish: ((ReleaseRun) -> Void)?
-    @ObservationIgnored private let client: ASCClient
+    @ObservationIgnored private let apple: ASCClient?
+    @ObservationIgnored private let play: PlayClient?
+    private var client: ASCClient { apple! }
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let sink: LogSink
     @ObservationIgnored private var nextLineID = 0
 
-    public init(plan: ReleasePlan, client: ASCClient) {
+    public init(plan: ReleasePlan, apple: ASCClient? = nil, play: PlayClient? = nil) {
         self.plan = plan
-        self.client = client
-        steps = StepID.allCases.map { RunStep(id: $0) }
+        self.apple = apple
+        self.play = play
+        steps = StepID.steps(for: plan.platform).map { RunStep(id: $0) }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let safe = plan.app.name.replacingOccurrences(of: "/", with: "-")
         logFile = WorkspaceStore.logs.appendingPathComponent("\(safe) \(plan.version) (\(plan.build)) \(stamp).log")
@@ -201,14 +240,23 @@ public final class ReleaseRun: Identifiable {
         log("Release \(plan.app.name) \(plan.version) (\(plan.build)) from \(plan.projectRoot.path)")
         if plan.rehearsal { log("Rehearsal: stops after export, nothing is uploaded.", .warning) }
 
-        let order: [(StepID, (inout Context) async throws -> StepState)] = [
+        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.platform == .ios ? [
             (.prepare, prepare), (.archive, archive), (.sign, preSign), (.export, export),
             (.upload, upload), (.processing, waitForProcessing), (.notes, writeNotes),
             (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
+        ] : [
+            (.prepare, prepareAndroid), (.bundle, buildBundle), (.checkSigning, checkSigning), (.playRelease, releaseToPlay),
         ]
+        let remote: Set<StepID> = [.upload, .processing, .notes, .groups, .review, .live, .playRelease]
+        var resuming = plan.startAt != nil
         for (id, body) in order {
             if Task.isCancelled { break }
-            if plan.rehearsal, [.upload, .processing, .notes, .groups, .review, .live].contains(id) {
+            if resuming, id != plan.startAt {
+                set(id, .skipped("Done in the earlier run"))
+                continue
+            }
+            resuming = false
+            if plan.rehearsal, remote.contains(id) {
                 set(id, .skipped("Rehearsal"))
                 continue
             }
@@ -233,7 +281,7 @@ public final class ReleaseRun: Identifiable {
             if let c = current, !step(c).state.isFinished { set(c, .failed("Cancelled")) }
             finish(.cancelled)
         } else {
-            log(plan.rehearsal ? "Rehearsal finished. The IPA is ready at \(ipa?.path ?? "?")." : "Shipped \(plan.app.name) \(plan.version) (\(plan.build)).", .success)
+            log(plan.rehearsal ? "Rehearsal finished. The \(plan.platform == .ios ? "IPA" : "bundle") is ready at \(ipa?.path ?? "?")." : "Shipped \(plan.app.name) \(plan.version) (\(plan.build)).", .success)
             finish(.succeeded)
         }
     }
@@ -505,6 +553,86 @@ public final class ReleaseRun: Identifiable {
             try await Task.sleep(for: .seconds(20))
         }
         return .warning("Still \(describeState(last).label.lowercased()). Apple emails when it is ready.")
+    }
+
+    // MARK: - Android
+
+    private func prepareAndroid(_ ctx: inout Context) async throws -> StepState {
+        let project = try FlutterProject.inspect(root, recipe: plan.recipe)
+        log("Flutter project \(project.name), pubspec \(project.version)+\(project.buildNumber), package \(project.androidPackage ?? "?")")
+        if let pkg = project.androidPackage, pkg != plan.app.bundleID {
+            throw ReleaseError.precondition("The project builds \(pkg), but the Play app is \(plan.app.bundleID).")
+        }
+        let flutter = try await Shell.capture("flutter", ["--version", "--machine"], cwd: root)
+        if let start = flutter.firstIndex(of: "{"), let json = try? JSONDecoder().decode(JSONValue.self, from: Data(flutter[start...].utf8)) {
+            log("Flutter \(json["frameworkVersion"].string ?? "?"), Dart \(json["dartSdkVersion"].string ?? "?")")
+        }
+        var warning: String?
+        if !project.hasUploadKey {
+            let text = "No android/key.properties: the bundle would be signed with the debug key, which Play refuses."
+            if plan.rehearsal { warning = text } else { throw ReleaseError.precondition(text) }
+        }
+        if let play {
+            detail(.prepare, "Checking Play")
+            let tracks = try await play.overview(package: plan.app.bundleID).tracks
+            let highest = tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0
+            log("Highest version code on Play: \(highest)")
+            if plan.build <= highest, !plan.rehearsal {
+                throw ReleaseError.precondition("Version code \(plan.build) is not above Play's highest (\(highest)).")
+            }
+        }
+        if plan.rehearsal {
+            log("Rehearsal leaves pubspec.yaml as it is.")
+        } else if plan.recipe.writeBuildNumber, project.version != plan.version || project.buildNumber != plan.build {
+            try project.writeVersion(plan.version, build: plan.build)
+            log("pubspec.yaml → version: \(plan.version)+\(plan.build)", .success)
+        }
+        return warning.map { .warning($0) } ?? .done
+    }
+
+    private func buildBundle(_ ctx: inout Context) async throws -> StepState {
+        detail(.bundle, "flutter build appbundle")
+        let args = ["build", "appbundle", "--release", "--build-name", plan.version, "--build-number", "\(plan.build)"]
+        log("$ flutter \(args.joined(separator: " "))")
+        let code = try await Shell.run("flutter", args, cwd: root, onLine: outputHandler(.bundle))
+        try checkCancelled()
+        guard code == 0 else { throw ReleaseError.command("flutter build appbundle", code: code, tail: "") }
+        let aab = root.appendingPathComponent("build/app/outputs/bundle/release/app-release.aab")
+        guard FileManager.default.fileExists(atPath: aab.path) else { throw ReleaseError.precondition("No bundle at \(aab.path)") }
+        ipa = aab
+        let size = (try? FileManager.default.attributesOfItem(atPath: aab.path)[.size] as? Int).flatMap { $0 } ?? 0
+        log("app-release.aab · \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))", .success)
+        return .done
+    }
+
+    private func checkSigning(_ ctx: inout Context) async throws -> StepState {
+        let candidates = ["/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/keytool", "keytool"]
+        for tool in candidates where !tool.hasPrefix("/") || FileManager.default.fileExists(atPath: tool) {
+            guard let out = try? await Shell.capture(tool, ["-printcert", "-jarfile", ipa!.path]) else { continue }
+            let owner = out.split(separator: "\n").first { $0.contains("Owner:") }.map { String($0).replacingOccurrences(of: "Owner: ", with: "") } ?? "?"
+            let sha = out.split(separator: "\n").first { $0.contains("SHA256:") }.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+            log("Signed by \(owner)")
+            if !sha.isEmpty { log(sha) }
+            if owner.contains("Android Debug") {
+                if plan.rehearsal { return .warning("Signed with the debug key; Play would refuse it.") }
+                throw ReleaseError.precondition("The bundle is signed with the debug key. Set android/key.properties to the upload key.")
+            }
+            return .done
+        }
+        return .warning("keytool not found, signature not checked")
+    }
+
+    private func releaseToPlay(_ ctx: inout Context) async throws -> StepState {
+        guard let play, let target = plan.play else { throw ReleaseError.precondition("No Play account for this app") }
+        detail(.playRelease, "\(target.track) · \(target.status)")
+        let sink = sink
+        let result = try await play.release(package: plan.app.bundleID, bundle: ipa!, track: target.track,
+                                            name: "\(plan.version) (\(plan.build))", status: target.status,
+                                            userFraction: target.userFraction, notes: plan.whatsNew,
+                                            log: { sink.add(.playRelease, .info, $0) })
+        playVersionCode = result.versionCode
+        log("Released \(plan.version) (\(result.versionCode)) to \(target.track)", .success)
+        return result.status == target.status ? .done : .warning("Saved as a \(result.status) release: this app is not published on Play yet.")
     }
 
     private func checkCancelled() throws {

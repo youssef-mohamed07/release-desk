@@ -29,6 +29,9 @@ public struct Team: Codable, Identifiable, Hashable, Sendable {
     public var name: String
     public var teamID: String?
     public var credential: Credential
+    /// Play apps added by package name (Play has no list of a developer's
+    /// apps unless the Reporting API is on).
+    public var packages: [String]?
 
     public init(name: String, teamID: String?, credential: Credential) {
         self.name = name
@@ -40,11 +43,14 @@ public struct Team: Codable, Identifiable, Hashable, Sendable {
 public enum Credential: Codable, Hashable, Sendable {
     case appStoreConnectKey(keyID: String, issuerID: String)
     case playServiceAccount(email: String)
+    /// Signed in with a person's own Google account.
+    case googleUser(email: String)
 
     public var secretAccount: String {
         switch self {
         case .appStoreConnectKey(let keyID, _): "asc:\(keyID)"
         case .playServiceAccount(let email): "play:\(email)"
+        case .googleUser(let email): "google:\(email)"
         }
     }
 
@@ -52,6 +58,14 @@ public enum Credential: Codable, Hashable, Sendable {
         switch self {
         case .appStoreConnectKey(let keyID, _): "API key \(keyID)"
         case .playServiceAccount(let email): email
+        case .googleUser(let email): "Signed in as \(email)"
+        }
+    }
+
+    public var isGoogle: Bool {
+        switch self {
+        case .appStoreConnectKey: false
+        default: true
         }
     }
 }
@@ -86,6 +100,9 @@ public struct IOSRecipe: Codable, Hashable, Sendable {
     public var groupIDs: [String] = []
     public var submitForReview = true
     public var locales = ["ar-SA", "en-US"]
+    /// Android: the track and status used last time.
+    public var playTrack: String?
+    public var playStatus: String?
 
     public init() {}
 }

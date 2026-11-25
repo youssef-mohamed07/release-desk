@@ -44,7 +44,7 @@ struct Sidebar: View {
                     HStack(spacing: 6) {
                         ProviderMark(provider: account.provider, size: 11)
                         Text(account.name)
-                        if let email = account.email { Text(email).foregroundStyle(.tertiary) }
+                        if let email = account.email, email != account.name { Text(email).foregroundStyle(.tertiary) }
                     }
                 }
             }
@@ -54,15 +54,10 @@ struct Sidebar: View {
                     Label { Text("App Store Connect") } icon: { Image(systemName: "apple.logo") }
                 }
                 .buttonStyle(.plain)
-                Label {
-                    HStack {
-                        Text("Google Play")
-                        Spacer()
-                        Text("Next").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                            .padding(.horizontal, 6).padding(.vertical, 1).background(.quaternary, in: .capsule)
-                    }
-                } icon: { PlayMark(size: 14) }
-                .foregroundStyle(.secondary)
+                Button { model.connecting = .google } label: {
+                    Label { Text("Google Play") } icon: { PlayMark(size: 14) }
+                }
+                .buttonStyle(.plain)
             }
         }
         .listStyle(.sidebar)
@@ -71,7 +66,7 @@ struct Sidebar: View {
                 BrandGlyph(size: 26)
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Release Desk").font(.headline)
-                    Text("Apple · Google Play").font(.caption2).foregroundStyle(.secondary)
+                    Text("⌘K to jump anywhere").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -100,6 +95,13 @@ struct Sidebar: View {
                     if model.activeRun(for: app.id) != nil {
                         Image(systemName: "paperplane.fill").font(.caption2).foregroundStyle(Palette.cyan)
                             .symbolEffect(.pulse, options: .repeating)
+                    } else if app.isPlay {
+                        if model.apps[app.id]?.error != nil {
+                            Image(systemName: "person.badge.key").font(.caption2).foregroundStyle(StateTone.waiting.color)
+                        } else if let r = model.apps[app.id]?.tracks.first(where: { $0.track == "production" })?.releases.first
+                                    ?? model.apps[app.id]?.tracks.first?.releases.first {
+                            Circle().fill(r.tone.color).frame(width: 6, height: 6)
+                        }
                     } else if let b = model.apps[app.id]?.builds.first {
                         Circle().fill(describeState(b.externalState ?? b.processingState).tone.color).frame(width: 6, height: 6)
                     }
@@ -109,6 +111,9 @@ struct Sidebar: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "person.2.crop.square.stack").foregroundStyle(.secondary)
+                    .overlay(alignment: .bottomTrailing) {
+                        if team.credential.isGoogle { PlayMark(size: 8).offset(x: 3, y: 3) }
+                    }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(team.name).lineLimit(1)
                     Text([team.teamID, state.map { "\($0.apps.count) apps" }].compactMap { $0 }.joined(separator: " · "))

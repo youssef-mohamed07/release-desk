@@ -131,6 +131,7 @@ struct AmbientGlow: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
         .task(id: url) { if let url { image = await ImageCache.shared.image(url) } }
     }
 }

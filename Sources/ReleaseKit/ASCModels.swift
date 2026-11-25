@@ -6,6 +6,14 @@ public struct ASCApp: Identifiable, Hashable, Sendable, Codable {
     public let bundleID: String
     public let sku: String
     public let primaryLocale: String
+
+    public init(id: String, name: String, bundleID: String, sku: String, primaryLocale: String) {
+        self.id = id
+        self.name = name
+        self.bundleID = bundleID
+        self.sku = sku
+        self.primaryLocale = primaryLocale
+    }
 }
 
 public struct ASCBuild: Identifiable, Hashable, Sendable, Codable {
