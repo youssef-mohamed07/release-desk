@@ -1,6 +1,6 @@
 # Release Desk
 
-A native macOS app for shipping mobile apps to App Store Connect (and next, Google Play): every account and team kept apart, every app, build, TestFlight group and version in one place, and a release pipeline you launch with one button and watch step by step.
+A native macOS app for shipping mobile apps to App Store Connect and Google Play: every account and team kept apart, every app, build, TestFlight group, Play track and version in one place, and a release pipeline you launch with one button and watch step by step.
 
 ## Run it
 
@@ -31,6 +31,8 @@ For development, `swift build` and `swift test` work as usual; `open Package.swi
   10. Live for testers: waits for `IN_BETA_TESTING`.
 
   A rehearsal runs 1–4 and stops with the IPA. Logs are kept per run in `~/Library/Application Support/Release Desk/Logs`. The API key is written to a private temp file only for the run and deleted after.
+- **Google Play.** Sign in with your own Google account (Connect → Google Play → Sign in with Google). Release Desk needs a Desktop OAuth client once (`client_secret_….json` from a Google Cloud project with the Google Play Android Developer API and the Play Developer Reporting API on; your account as a test user while the consent screen is in Testing): drop the file on the window or pick it in the sheet, and it goes to the Keychain. A service account key works too. Play apps show their tracks and releases; Ship builds an app bundle, checks it is not debug-signed, uploads it and releases it to a track (full, staged rollout or draft).
+- **Comfort.** ⌘K jumps to any app, team or action. Drop a `.p8` or `.json` on the window or the Dock icon to connect it. Release notes are kept as drafts. A failed iOS run resumes from Apple processing once the upload is done. Linking a project links the same app on the other store.
 - **Menu bar and Dock.** Runs in flight show in the menu bar extra and as a Dock badge; a notification says when one lands or stops.
 
 ## Command line
@@ -45,8 +47,7 @@ Also `builds`, `groups`, `versions` (with `--app APP_ID`) and `team`. It reads t
 
 ## Next
 
-- Google Play: service account per developer account, apps and tracks (internal, closed, open, production), upload AAB, roll out to a track, release notes.
-- More than one team at once is already modelled; Play developer accounts slot in under the same accounts.
+- Play apps grouped by developer account (today one Google sign-in shows all its apps as one team).
 - New app wizard: register the bundle id and capabilities, create the App Store Connect record, create the Play app, first upload on both stores.
 - App Store review: version metadata checks and submit for review.
 
