@@ -46,14 +46,14 @@ struct AppDetailView: View {
         let link = model.workspace.link(for: appID)
         let run = model.activeRun(for: appID)
         return HStack(alignment: .center, spacing: 22) {
-            AppIcon(url: model.iconURL(appID, size: 512), name: app.name, size: 104)
+            AppIcon(url: model.iconURL(appID, size: 512), name: app.name, size: 104).sensitive(14)
             VStack(alignment: .leading, spacing: 8) {
-                Text(app.name).font(.system(size: 34, weight: .bold, design: .rounded))
+                Text(app.name).font(.system(size: 34, weight: .bold, design: .rounded)).sensitive(12)
                 HStack(spacing: 10) {
-                    Chip(text: app.bundleID, symbol: "shippingbox", mono: true)
-                    if let team { Chip(text: team.name, symbol: "person.2") }
+                    Chip(text: app.bundleID, symbol: "shippingbox", mono: true, sensitive: true)
+                    if let team { Chip(text: team.name, symbol: "person.2", sensitive: true) }
                     Chip(text: app.primaryLocale, symbol: "globe")
-                    if let link { Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true) }
+                    if let link { Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true, sensitive: true) }
                 }
                 if let latest = state.builds.first {
                     HStack(spacing: 8) {
@@ -151,11 +151,12 @@ struct Chip: View {
     let text: String
     var symbol: String? = nil
     var mono = false
+    var sensitive = false
 
     var body: some View {
         HStack(spacing: 5) {
             if let symbol { Image(systemName: symbol).font(.caption2) }
-            Text(text).font(mono ? .caption.monospaced() : .caption).lineLimit(1)
+            Text(text).font(mono ? .caption.monospaced() : .caption).lineLimit(1).sensitive(sensitive ? 5 : 0)
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
@@ -190,6 +191,7 @@ struct BuildTicket: View {
                 let names = build.groupIDs.compactMap { id in groups.first { $0.id == id }?.name }
                 Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(.secondary)
                 Text(names.isEmpty ? "No groups" : names.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .sensitive(names.isEmpty ? 0 : 4)
                 Spacer()
                 if let exp = build.expires, !build.expired {
                     Text("\(max(0, Calendar.current.dateComponents([.day], from: Date(), to: exp).day ?? 0))d left")
@@ -225,7 +227,7 @@ struct GroupCard: View {
                 }
                 .frame(width: 34, height: 34)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(group.name).font(.headline)
+                    Text(group.name).font(.headline).sensitive(5)
                     Text(group.isInternal ? (group.allBuilds ? "Internal · every build" : "Internal") : "External · needs beta review")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -247,7 +249,7 @@ struct GroupCard: View {
             if let link = group.publicLink, group.publicLinkEnabled {
                 HStack {
                     Image(systemName: "link").foregroundStyle(.secondary)
-                    Text(link.replacingOccurrences(of: "https://", with: "")).font(.caption.monospaced()).lineLimit(1)
+                    Text(link.replacingOccurrences(of: "https://", with: "")).font(.caption.monospaced()).lineLimit(1).sensitive()
                     Spacer()
                     Button(copied ? "Copied" : "Copy") {
                         copyToPasteboard(link)
@@ -275,9 +277,9 @@ struct BuildSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 14) {
-                AppIcon(url: build.iconURL(size: 128), name: app.name, size: 48)
+                AppIcon(url: build.iconURL(size: 128), name: app.name, size: 48).sensitive(8)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(app.name) \(build.version) (\(build.number))").font(.title2.bold())
+                    HStack { Text(app.name).sensitive(); Text("\(build.version) (\(build.number))") }.font(.title2.bold())
                     Text("Uploaded \(build.uploaded?.short ?? "?") · min iOS \(build.minOS ?? "?")").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -304,7 +306,7 @@ struct BuildSheet: View {
                     ForEach(notes) { n in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(n.locale).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(n.whatsNew.ifEmpty("—")).textSelection(.enabled)
+                            Text(n.whatsNew.ifEmpty("—")).textSelection(.enabled).sensitive()
                                 .frame(maxWidth: .infinity, alignment: n.locale.hasPrefix("ar") ? .trailing : .leading)
                                 .multilineTextAlignment(n.locale.hasPrefix("ar") ? .trailing : .leading)
                         }

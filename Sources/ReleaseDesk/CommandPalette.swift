@@ -106,7 +106,7 @@ struct CommandPalette: View {
     private func row(_ item: Item, selected: Bool) -> some View {
         HStack(spacing: 12) {
             if let appID = item.appID, let app = model.app(appID) {
-                AppIcon(url: model.iconURL(appID, size: 64), name: app.name, size: 28)
+                AppIcon(url: model.iconURL(appID, size: 64), name: app.name, size: 28).sensitive(6)
                     .overlay(alignment: .bottomTrailing) {
                         if item.id.hasPrefix("ship-") {
                             Image(systemName: "paperplane.circle.fill").font(.system(size: 13)).foregroundStyle(.white, Palette.indigo).offset(x: 4, y: 4)
@@ -117,8 +117,9 @@ struct CommandPalette: View {
                     .background(.quaternary, in: .rect(cornerRadius: 7))
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.title).font(.body.weight(.medium))
+                Text(item.title).font(.body.weight(.medium)).sensitive(item.appID != nil || item.id.hasPrefix("team-") ? 5 : 0)
                 Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .sensitive(item.appID != nil || item.id.hasPrefix("team-") ? 4 : 0)
             }
             Spacer()
             if let p = item.provider { ProviderMark(provider: p, size: 12).foregroundStyle(.secondary) }

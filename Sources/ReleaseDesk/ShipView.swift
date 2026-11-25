@@ -43,10 +43,10 @@ struct LinkProjectPanel: View {
         ZStack {
             AmbientGlow(url: model.iconURL(app.id), intensity: 0.5)
             VStack(spacing: 26) {
-                AppIcon(url: model.iconURL(app.id, size: 512), name: app.name, size: 96)
+                AppIcon(url: model.iconURL(app.id, size: 512), name: app.name, size: 96).sensitive(14)
                 VStack(spacing: 8) {
-                    Text("Where is \(app.name) built from?").font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick the Flutter project for \(app.bundleID). Release Desk remembers it, and links the same app on the other store too.")
+                    Text("Where is this app built from?").font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text("Pick its Flutter project. Release Desk remembers it, and links the same app on the other store too.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 540)
                 }
                 VStack(spacing: 10) {
@@ -62,6 +62,7 @@ struct LinkProjectPanel: View {
                                     Text("\(p.name) · \(p.version)+\(p.buildNumber) · iOS \(p.iosBundleID ?? "–") · Android \(p.androidPackage ?? "–")")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
+                                .sensitive()
                                 Spacer()
                                 Text("Use this").font(.callout.weight(.semibold))
                                 Image(systemName: "arrow.right")
@@ -162,6 +163,7 @@ struct ShipComposer: View {
     let link: ProjectLink
     let onLaunch: () -> Void
     @Environment(AppModel.self) private var model
+    @Environment(\.privacyMode) private var privacy
 
     @State private var project: FlutterProject?
     @State private var loadError: String?
@@ -177,6 +179,17 @@ struct ShipComposer: View {
     @State private var confirming = false
     @State private var launchError: String?
     @State private var ready = false
+    // Build on GitHub Actions
+    @State private var onGitHub = false
+    @State private var repo: GitHubRepo?
+    @State private var ghUser: String?
+    @State private var ghWorkflow: Bool?
+    @State private var ghSecrets: Set<String>?
+    @State private var ghError: String?
+    @State private var ghBusy = false
+    @State private var wroteWorkflow: URL?
+    @State private var confirmSecrets = false
+    @State private var flutterVersion: String?
 
     private var state: AppState { model.apps[app.id] ?? AppState() }
     private var latest: ASCBuild? { state.builds.first }
@@ -195,6 +208,7 @@ struct ShipComposer: View {
                     HStack(alignment: .top, spacing: 20) {
                         VStack(spacing: 20) {
                             releaseCard
+                            buildOnCard
                             testersCard
                             optionsCard
                         }
@@ -214,7 +228,7 @@ struct ShipComposer: View {
         .background(alignment: .top) { AmbientGlow(url: model.iconURL(app.id), intensity: 0.45).frame(height: 460) }
         .task(id: link.path) { await load() }
         .onChange(of: notes) { Drafts.save(notes, for: app.id) }
-        .alert(rehearsal ? "Rehearse \(app.name) \(version) (\(build))?" : "Ship \(app.name) \(version) (\(build))?", isPresented: $confirming) {
+        .alert(rehearsal ? "Rehearse \(privacy ? "this app" : app.name) \(version) (\(build))?" : "Ship \(privacy ? "this app" : app.name) \(version) (\(build))?", isPresented: $confirming) {
             Button(rehearsal ? "Rehearse" : "Ship to TestFlight") { launch() }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -224,11 +238,15 @@ struct ShipComposer: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            AppIcon(url: model.iconURL(app.id, size: 256), name: app.name, size: 64)
+            AppIcon(url: model.iconURL(app.id, size: 256), name: app.name, size: 64).sensitive(10)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Ship \(app.name)").font(.system(size: 28, weight: .bold, design: .rounded))
+                HStack(spacing: 10) {
+                    Text("Ship")
+                    Text(app.name).sensitive(10)
+                }
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 HStack(spacing: 8) {
-                    Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true)
+                    Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true, sensitive: true)
                     if let p = project { Chip(text: "pubspec \(p.version)+\(p.buildNumber)", symbol: "doc.text", mono: true) }
                     Chip(text: "iOS · TestFlight", symbol: "iphone")
                 }
@@ -302,7 +320,7 @@ struct ShipComposer: View {
                             .font(.title3).foregroundStyle(on ? Palette.mint : .secondary)
                             .contentTransition(.symbolEffect(.replace))
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(g.name).fontWeight(.medium)
+                            Text(g.name).fontWeight(.medium).sensitive(5)
                             Text(g.isInternal ? (g.allBuilds ? "Internal · gets every build" : "Internal") : "External · beta review")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -319,6 +337,141 @@ struct ShipComposer: View {
             }
         }
         .card()
+    }
+
+    private var cloudReady: Bool {
+        ghUser != nil && ghWorkflow == true && (ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? false)
+    }
+
+    private var buildOnCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Build on", systemImage: "hammer").font(.headline)
+                Spacer()
+                Picker("Build on", selection: $onGitHub.animation(.snappy)) {
+                    Text("This Mac").tag(false)
+                    Text("GitHub Actions").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            if onGitHub {
+                if ghBusy && repo == nil {
+                    HStack { ProgressView().controlSize(.small); Text("Looking at the repository…").foregroundStyle(.secondary) }
+                } else if let repo {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right").foregroundStyle(.secondary)
+                        Text(repo.fullName).font(.callout.monospaced()).sensitive()
+                        Text("· \(repo.projectDir)").font(.callout.monospaced()).foregroundStyle(.secondary).sensitive()
+                        Spacer()
+                        Link(destination: repo.actionsURL) { Image(systemName: "arrow.up.right.square") }.help("Open Actions on GitHub")
+                    }
+                    checkRow(ok: ghUser != nil, title: ghUser.map { "Signed in to GitHub as \($0)" } ?? "Sign in to GitHub",
+                             hint: ghUser == nil ? "Run gh auth login in Terminal, then check again." : nil, sensitiveTitle: ghUser != nil) { EmptyView() }
+                    checkRow(ok: ghWorkflow == true, title: "Workflow on the default branch",
+                             hint: wroteWorkflow != nil && ghWorkflow != true ? "Added to the project. Commit and push it, then check again." : nil) {
+                        if ghWorkflow != true {
+                            Button(wroteWorkflow == nil ? "Add to project" : "Show file") {
+                                if let f = wroteWorkflow { NSWorkspace.shared.activateFileViewerSelecting([f]) } else { writeWorkflow() }
+                            }
+                            .buttonStyle(.glass).controlSize(.small)
+                        }
+                    }
+                    checkRow(ok: ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? false,
+                             title: "Secrets ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY",
+                             hint: ghSecrets.map { s in GitHubClient.secretNames.filter { !s.contains($0) } }.flatMap { $0.isEmpty ? nil : "Missing: \($0.joined(separator: ", "))" }) {
+                        if !(ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? true) {
+                            Button("Set from this team's key") { confirmSecrets = true }
+                                .buttonStyle(.glass).controlSize(.small)
+                        }
+                    }
+                    HStack {
+                        Text("A GitHub macOS runner archives, signs and uploads; this Mac does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { Task { await checkGitHub() } } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).help("Check again").disabled(ghBusy)
+                    }
+                } else {
+                    Text(ghError ?? "This project has no GitHub remote (origin).").font(.callout).foregroundStyle(.secondary)
+                }
+                if let ghError, repo != nil { Label(ghError, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
+            } else {
+                Text("Xcode and Flutter on this Mac archive, sign and upload.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .card()
+        .onChange(of: onGitHub) {
+            model.updateRecipe(appID: app.id) { $0.buildOn = onGitHub ? "github" : nil }
+            if onGitHub && repo == nil { Task { await checkGitHub() } }
+        }
+        .alert("Set the repository's secrets?", isPresented: $confirmSecrets) {
+            Button("Set secrets") { Task { await setSecrets() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Release Desk puts this team's App Store Connect key into \(privacy ? "the repository" : repo?.fullName ?? "the repository")'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key.")
+        }
+    }
+
+    @ViewBuilder
+    private func checkRow<Accessory: View>(ok: Bool, title: String, hint: String?, sensitiveTitle: Bool = false,
+                                           @ViewBuilder accessory: () -> Accessory) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(ok ? Palette.mint : .secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout).sensitive(sensitiveTitle ? 5 : 0)
+                if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            accessory()
+        }
+    }
+
+    private func checkGitHub() async {
+        ghBusy = true
+        ghError = nil
+        defer { ghBusy = false }
+        if repo == nil { repo = await GitHubRepo.detect(link.url) }
+        guard let repo else { return }
+        do {
+            ghUser = try await model.github.login()
+            ghWorkflow = try await model.github.hasWorkflow(repo)
+            ghSecrets = try await model.github.secretsPresent(repo)
+        } catch {
+            ghError = error.localizedDescription
+        }
+        if flutterVersion == nil, let out = try? await Shell.capture("flutter", ["--version", "--machine"], cwd: link.url),
+           let start = out.firstIndex(of: "{"), let json = try? JSONDecoder().decode(JSONValue.self, from: Data(out[start...].utf8)) {
+            flutterVersion = json["frameworkVersion"].string
+        }
+    }
+
+    private func writeWorkflow() {
+        guard let repo else { return }
+        var root = link.url
+        if repo.projectDir != "." { for _ in repo.projectDir.split(separator: "/") { root.deleteLastPathComponent() } }
+        let file = root.appendingPathComponent(".github/workflows/\(GitHubClient.workflowFile)")
+        let yaml = CloudWorkflow.yaml(projectDir: repo.projectDir, recipe: link.recipe,
+                                      teamID: model.team(ofApp: app.id)?.teamID, flutterVersion: flutterVersion)
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try yaml.write(to: file, atomically: true, encoding: .utf8)
+            wroteWorkflow = file
+        } catch {
+            ghError = error.localizedDescription
+        }
+    }
+
+    private func setSecrets() async {
+        guard let repo else { return }
+        ghBusy = true
+        defer { ghBusy = false }
+        do {
+            try await model.setCloudSecrets(appID: app.id, repo: repo)
+            ghSecrets = try await model.github.secretsPresent(repo)
+        } catch {
+            ghError = error.localizedDescription
+        }
     }
 
     private var optionsCard: some View {
@@ -369,6 +522,7 @@ struct ShipComposer: View {
                         .scrollContentBackground(.hidden)
                         .padding(8)
                         .frame(minHeight: 130)
+                        .sensitive(5)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.2)))
                         .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
@@ -392,7 +546,7 @@ struct ShipComposer: View {
             ForEach(Array(commits.enumerated()), id: \.offset) { _, c in
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(Palette.violet).frame(width: 6, height: 6).padding(.top, 6)
-                    Text(c).font(.callout).textSelection(.enabled)
+                    Text(c).font(.callout).textSelection(.enabled).sensitive(5)
                     Spacer()
                     Button {
                         let key = link.recipe.locales.first { $0.hasPrefix("en") } ?? link.recipe.locales.last ?? "en-US"
@@ -410,8 +564,8 @@ struct ShipComposer: View {
     private var launchBar: some View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(app.name) \(version) (\(build))").font(.headline.monospacedDigit())
-                Text(destinationText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 4) { Text(app.name).sensitive(); Text("\(version) (\(build))") }.font(.headline.monospacedDigit())
+                Text(destinationText).font(.caption).foregroundStyle(.secondary).lineLimit(1).sensitive(4)
             }
             Spacer()
             if let launchError { Text(launchError).font(.caption).foregroundStyle(Palette.ember).lineLimit(2) }
@@ -423,7 +577,7 @@ struct ShipComposer: View {
             .buttonStyle(.glassProminent)
             .tint(rehearsal ? Palette.violet : Palette.indigo)
             .controlSize(.extraLarge)
-            .disabled(!ready || buildTaken || version.isEmpty || model.activeRun(for: app.id) != nil)
+            .disabled(!ready || buildTaken || version.isEmpty || model.activeRun(for: app.id) != nil || (onGitHub && !cloudReady))
             .keyboardShortcut(.return, modifiers: .command)
         }
         .padding(.horizontal, 22)
@@ -434,22 +588,24 @@ struct ShipComposer: View {
     }
 
     private var destinationText: String {
-        if rehearsal { return "Rehearsal · archive, sign, export" }
+        if rehearsal { return onGitHub ? "Rehearsal on GitHub · archive, sign, export" : "Rehearsal · archive, sign, export" }
         let names = groups.map(\.name)
-        var parts = ["Upload"]
+        var parts = [onGitHub ? "GitHub build" : "Upload"]
         parts.append(names.isEmpty ? "no tester groups" : names.joined(separator: " + "))
         if submitForReview && groups.contains(where: { !$0.isInternal }) { parts.append("beta review") }
         return parts.joined(separator: " → ")
     }
 
     private var confirmText: String {
+        let folder = onGitHub ? "on a GitHub macOS runner (\(privacy ? "the repository" : repo?.fullName ?? ""))"
+            : (privacy ? "the linked project" : (link.path as NSString).abbreviatingWithTildeInPath)
         if rehearsal {
-            return "Builds \((link.path as NSString).abbreviatingWithTildeInPath), signs and exports the IPA. Nothing is uploaded."
+            return "Builds \(folder), signs and exports the IPA. Nothing is uploaded."
         }
-        var s = "Builds \((link.path as NSString).abbreviatingWithTildeInPath) and uploads it to App Store Connect."
+        var s = "Builds \(folder) and uploads it to App Store Connect."
         if !groups.isEmpty {
             let testers = groups.compactMap(\.testerCount).reduce(0, +)
-            s += " Adds it to \(groups.map(\.name).joined(separator: " and ")) (\(testers) testers)."
+            s += " Adds it to \(privacy ? "\(groups.count) tester groups" : groups.map(\.name).joined(separator: " and ")) (\(testers) testers)."
         }
         if notes.values.contains(where: { !$0.isEmpty }) { s += " Writes What to Test." }
         if submitForReview && groups.contains(where: { !$0.isInternal }) { s += " Submits it for beta app review." }
@@ -472,6 +628,7 @@ struct ShipComposer: View {
         let remembered = Set(link.recipe.groupIDs).intersection(state.groups.map(\.id))
         selectedGroups = remembered.isEmpty ? Set(state.groups.map(\.id)) : remembered
         notes = Drafts.load(for: app.id)
+        onGitHub = link.recipe.buildOn == "github"
         ready = true
         if let latest, let c = try? model.client(forApp: app.id) {
             let locs = (try? await c.betaLocalizations(buildID: latest.id)) ?? []
@@ -490,10 +647,11 @@ struct ShipComposer: View {
         }
         var recipe = model.workspace.link(for: app.id)?.recipe ?? link.recipe
         recipe.writeBuildNumber = writeBuildNumber
-        let plan = ReleasePlan(app: app, projectRoot: project.root, version: version, build: build, recipe: recipe,
+        var plan = ReleasePlan(app: app, projectRoot: project.root, version: version, build: build, recipe: recipe,
                                teamID: model.team(ofApp: app.id)?.teamID, groups: ordered,
                                whatsNew: notes.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
                                submitForReview: submitForReview, rehearsal: rehearsal)
+        if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo) }
         do {
             _ = try model.launch(plan)
             if !rehearsal { Drafts.clear(for: app.id) }

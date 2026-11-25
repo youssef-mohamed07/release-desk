@@ -218,3 +218,32 @@ func copyToPasteboard(_ s: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(s, forType: .string)
 }
+
+// MARK: - Privacy mode
+
+/// Privacy mode blurs whatever identifies a person, a team or an app: names,
+/// icons, emails, ids, paths, notes and logs. For screen sharing and videos.
+private struct PrivacyKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var privacyMode: Bool {
+        get { self[PrivacyKey.self] }
+        set { self[PrivacyKey.self] = newValue }
+    }
+}
+
+struct Sensitive: ViewModifier {
+    @Environment(\.privacyMode) private var on
+    var radius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: on ? radius : 0, opaque: false)
+            .animation(.smooth(duration: 0.25), value: on)
+    }
+}
+
+extension View {
+    /// Blurred while privacy mode is on.
+    func sensitive(_ radius: CGFloat = 6) -> some View { modifier(Sensitive(radius: radius)) }
+}

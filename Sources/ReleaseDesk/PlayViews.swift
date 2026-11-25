@@ -35,18 +35,18 @@ struct PlayAppDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 HStack(alignment: .center, spacing: 22) {
-                    AppIcon(url: model.iconURL(app.id, size: 512), name: app.name, size: 104)
+                    AppIcon(url: model.iconURL(app.id, size: 512), name: app.name, size: 104).sensitive(14)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
-                            Text(app.name).font(.system(size: 34, weight: .bold, design: .rounded))
+                            Text(app.name).font(.system(size: 34, weight: .bold, design: .rounded)).sensitive(12)
                             PlayMark(size: 22)
                         }
                         HStack(spacing: 10) {
-                            Chip(text: app.bundleID, symbol: "shippingbox", mono: true)
-                            if let team { Chip(text: team.name, symbol: "person.2") }
+                            Chip(text: app.bundleID, symbol: "shippingbox", mono: true, sensitive: true)
+                            if let team { Chip(text: team.name, symbol: "person.2", sensitive: true) }
                             if let lang = state.play?.defaultLanguage { Chip(text: lang, symbol: "globe") }
                             if let link = model.workspace.link(for: app.id) {
-                                Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true)
+                                Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true, sensitive: true)
                             }
                         }
                         if let top = state.tracks.flatMap(\.releases).max(by: { $0.maxCode < $1.maxCode }) {
@@ -82,7 +82,10 @@ struct PlayAppDetailView: View {
                     } else {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(alignment: .top, spacing: 14) {
-                                ForEach(state.tracks) { TrackColumn(track: $0) }
+                                // Tracks with releases first, each group in lifecycle order.
+                                ForEach(state.tracks.sorted { ($0.releases.isEmpty ? 1 : 0, $0.order) < ($1.releases.isEmpty ? 1 : 0, $1.order) }) {
+                                    TrackColumn(track: $0)
+                                }
                             }
                             .padding(.vertical, 4)
                         }
@@ -120,7 +123,7 @@ struct AccessCard: View {
                 .font(.title2).foregroundStyle(StateTone.waiting.color)
             VStack(alignment: .leading, spacing: 8) {
                 Text(isAccess ? (email == nil ? "No access to this app" : "Play needs to let this account in") : "Play answered with a problem").font(.headline)
-                Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).sensitive(4)
                 if isAccess, email != nil {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("1. Play Console → Users and permissions → Invite new users.")
@@ -131,7 +134,7 @@ struct AccessCard: View {
                 }
                 HStack {
                     if let email {
-                        Button(copied ? "Copied" : "Copy \(email)") {
+                        Button(copied ? "Copied" : "Copy service account email") {
                             copyToPasteboard(email)
                             copied = true
                         }
@@ -175,7 +178,7 @@ struct TrackColumn: View {
                         ProgressView(value: f).tint(Palette.cyan)
                     }
                     if let note = r.notes.values.first, !note.isEmpty {
-                        Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(4)
+                        Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(4).sensitive(4)
                     }
                 }
                 .padding(12)
@@ -256,6 +259,7 @@ struct PlayShipComposer: View {
     let link: ProjectLink
     let onLaunch: () -> Void
     @Environment(AppModel.self) private var model
+    @Environment(\.privacyMode) private var privacy
 
     @State private var project: FlutterProject?
     @State private var loadError: String?
@@ -285,14 +289,15 @@ struct PlayShipComposer: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(spacing: 16) {
-                        AppIcon(url: model.iconURL(app.id, size: 256), name: app.name, size: 64)
+                        AppIcon(url: model.iconURL(app.id, size: 256), name: app.name, size: 64).sensitive(10)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
-                                Text("Ship \(app.name)").font(.system(size: 28, weight: .bold, design: .rounded))
+                                Text("Ship").font(.system(size: 28, weight: .bold, design: .rounded))
+                                Text(app.name).font(.system(size: 28, weight: .bold, design: .rounded)).sensitive(10)
                                 PlayMark(size: 20)
                             }
                             HStack(spacing: 8) {
-                                Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true)
+                                Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true, sensitive: true)
                                 if let p = project { Chip(text: "pubspec \(p.version)+\(p.buildNumber)", symbol: "doc.text", mono: true) }
                                 Chip(text: "Android · Google Play", symbol: "apps.iphone")
                             }
@@ -323,7 +328,7 @@ struct PlayShipComposer: View {
             }
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(app.name) \(version) (\(build))").font(.headline.monospacedDigit())
+                    HStack(spacing: 4) { Text(app.name).sensitive(); Text("\(version) (\(build))") }.font(.headline.monospacedDigit())
                     Text(rehearsal ? "Rehearsal · build and check signing" : "Upload → \(tracks.first { $0.0 == track }?.1 ?? track) · \(statusText)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -346,7 +351,7 @@ struct PlayShipComposer: View {
         .background(alignment: .top) { AmbientGlow(url: model.iconURL(app.id), intensity: 0.45).frame(height: 460) }
         .task(id: link.path) { await load() }
         .onChange(of: notes) { Drafts.save(notes, for: app.id) }
-        .alert(rehearsal ? "Rehearse \(app.name) \(version) (\(build))?" : "Release \(app.name) \(version) (\(build)) on Google Play?", isPresented: $confirming) {
+        .alert(rehearsal ? "Rehearse \(privacy ? "this app" : app.name) \(version) (\(build))?" : "Release \(privacy ? "this app" : app.name) \(version) (\(build)) on Google Play?", isPresented: $confirming) {
             Button(rehearsal ? "Rehearse" : "Release") { launch() }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -449,6 +454,7 @@ struct PlayShipComposer: View {
                     }
                     TextEditor(text: Binding(get: { notes[locale] ?? "" }, set: { notes[locale] = $0 }))
                         .font(.system(size: 13.5)).scrollContentBackground(.hidden).padding(8).frame(minHeight: 120)
+                        .sensitive(5)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.2)))
                         .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)

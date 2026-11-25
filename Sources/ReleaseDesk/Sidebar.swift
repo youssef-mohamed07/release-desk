@@ -43,8 +43,8 @@ struct Sidebar: View {
                 } header: {
                     HStack(spacing: 6) {
                         ProviderMark(provider: account.provider, size: 11)
-                        Text(account.name)
-                        if let email = account.email, email != account.name { Text(email).foregroundStyle(.tertiary) }
+                        Text(account.name).sensitive(4)
+                        if let email = account.email, email != account.name { Text(email).foregroundStyle(.tertiary).sensitive(4) }
                     }
                 }
             }
@@ -69,6 +69,12 @@ struct Sidebar: View {
                     Text("⌘K to jump anywhere").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { withAnimation { model.privacy.toggle() } } label: {
+                    Image(systemName: model.privacy ? "eye.slash.fill" : "eye")
+                        .foregroundStyle(model.privacy ? Palette.indigo : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(model.privacy ? "Privacy mode is on: names, ids and paths are blurred (⇧⌘P)" : "Privacy mode: blur names, ids and paths (⇧⌘P)")
             }
             .padding(.horizontal, 16)
             .padding(.top, 6)
@@ -89,8 +95,8 @@ struct Sidebar: View {
         DisclosureGroup(isExpanded: Binding(get: { !collapsed.contains(team.id) }, set: { if $0 { collapsed.remove(team.id) } else { collapsed.insert(team.id) } })) {
             ForEach(state?.apps ?? []) { app in
                 HStack(spacing: 8) {
-                    AppIcon(url: model.iconURL(app.id, size: 64), name: app.name, size: 18)
-                    Text(app.name).lineLimit(1)
+                    AppIcon(url: model.iconURL(app.id, size: 64), name: app.name, size: 18).sensitive(4)
+                    Text(app.name).lineLimit(1).sensitive(5)
                     Spacer(minLength: 4)
                     if model.activeRun(for: app.id) != nil {
                         Image(systemName: "paperplane.fill").font(.caption2).foregroundStyle(Palette.cyan)
@@ -115,9 +121,12 @@ struct Sidebar: View {
                         if team.credential.isGoogle { PlayMark(size: 8).offset(x: 3, y: 3) }
                     }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(team.name).lineLimit(1)
-                    Text([team.teamID, state.map { "\($0.apps.count) apps" }].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(team.name).lineLimit(1).sensitive(5)
+                    HStack(spacing: 3) {
+                        if let id = team.teamID { Text(id).sensitive(4); Text("·") }
+                        Text(state.map { "\($0.apps.count) apps" } ?? "")
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if state?.loading == true { ProgressView().controlSize(.mini) }

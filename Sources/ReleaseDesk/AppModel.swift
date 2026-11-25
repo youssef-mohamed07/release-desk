@@ -44,7 +44,11 @@ final class AppModel {
 
     @ObservationIgnored private var clients: [UUID: ASCClient] = [:]
     @ObservationIgnored private var playClients: [UUID: PlayClient] = [:]
+    @ObservationIgnored let github = GitHubClient()
     var palette = false
+    var privacy: Bool = UserDefaults.standard.bool(forKey: "privacyMode") {
+        didSet { UserDefaults.standard.set(privacy, forKey: "privacyMode") }
+    }
     /// A key file dropped on the window, handed to the Connect sheet.
     var droppedKey: URL?
     @ObservationIgnored private var appTeam: [String: UUID] = [:]
@@ -282,7 +286,7 @@ final class AppModel {
                 apps[appID]?.refreshed = Date()
                 apps[appID]?.detailed = true
             } catch {
-                apps[appID]?.error = playMessage(error, team: team)
+                if !isCancellation(error) { apps[appID]?.error = playMessage(error, team: team) }
             }
             return
         }
@@ -301,8 +305,16 @@ final class AppModel {
             apps[appID]?.refreshed = Date()
             apps[appID]?.detailed = true
         } catch {
-            apps[appID]?.error = error.localizedDescription
+            if !isCancellation(error) { apps[appID]?.error = error.localizedDescription }
         }
+    }
+
+    /// A page that went away cancels its loads; that is not an error to show.
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let e = error as? URLError, e.code == .cancelled { return true }
+        if let e = error as? ReleaseError, case .cancelled = e { return true }
+        return false
     }
 
     // MARK: - Accounts
@@ -380,13 +392,25 @@ final class AppModel {
             guard let team = team(ofApp: plan.app.id) else { throw ReleaseError.precondition("No Play account for this app") }
             run = ReleaseRun(plan: plan, play: try playClient(for: team))
         } else {
-            run = ReleaseRun(plan: plan, apple: try client(forApp: plan.app.id))
+            run = ReleaseRun(plan: plan, apple: try client(forApp: plan.app.id), github: plan.cloud != nil ? github : nil)
         }
         run.onFinish = { [weak self] r in self?.finished(r) }
         runs.append(run)
         run.start()
         updateDock()
         return run
+    }
+
+    /// Puts the team's App Store Connect key into the repository's Actions
+    /// secrets, so the cloud workflow can sign and upload.
+    func setCloudSecrets(appID: String, repo: GitHubRepo) async throws {
+        guard let team = team(ofApp: appID), case .appStoreConnectKey(let keyID, let issuer) = team.credential else {
+            throw ReleaseError.precondition("This app has no App Store Connect key")
+        }
+        let pem = try Keychain.read(account: team.credential.secretAccount)
+        try await github.setSecret("ASC_KEY_ID", value: keyID, repo: repo)
+        try await github.setSecret("ASC_ISSUER_ID", value: issuer, repo: repo)
+        try await github.setSecret("ASC_PRIVATE_KEY", value: pem, repo: repo)
     }
 
     /// Runs a failed iOS release again from Apple processing (the upload is

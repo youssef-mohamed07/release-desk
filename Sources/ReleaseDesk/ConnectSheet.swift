@@ -117,7 +117,7 @@ struct ConnectSheet: View {
         Section("Your Google account") {
             if let user = googleUser {
                 HStack {
-                    Label("Signed in as \(user.email)", systemImage: "checkmark.seal.fill").foregroundStyle(Palette.mint)
+                    Label("Signed in as \(user.email)", systemImage: "checkmark.seal.fill").foregroundStyle(Palette.mint).sensitive(5)
                     Spacer()
                     Button("Use another account") { signIn() }.buttonStyle(.glass).controlSize(.small)
                 }
@@ -126,7 +126,7 @@ struct ConnectSheet: View {
                         Text("\(foundApps.count) apps on Play").font(.caption).foregroundStyle(.secondary)
                         FlowLayout(spacing: 6) {
                             ForEach(foundApps) { a in
-                                Label(a.name, systemImage: "app.fill").font(.caption)
+                                Label(a.name, systemImage: "app.fill").font(.caption).sensitive(4)
                                     .padding(.horizontal, 8).padding(.vertical, 4)
                                     .background(.quaternary.opacity(0.6), in: .capsule)
                             }
@@ -157,7 +157,7 @@ struct ConnectSheet: View {
             if let c = oauthClient {
                 LabeledContent("Sign-in client") {
                     HStack {
-                        Text(c.projectID ?? c.clientID.prefix(12) + "…").font(.caption.monospaced()).foregroundStyle(.secondary)
+                        Text(c.projectID ?? c.clientID.prefix(12) + "…").font(.caption.monospaced()).foregroundStyle(.secondary).sensitive(4)
                         Button("Change…") { importingClient = true }.buttonStyle(.borderless).font(.caption)
                     }
                 }
@@ -168,7 +168,7 @@ struct ConnectSheet: View {
                     HStack {
                         ForEach(clientFiles, id: \.self) { f in
                             Button { importClient(f) } label: {
-                                Label(String(f.lastPathComponent.prefix(28)) + "…", systemImage: "doc.badge.gearshape").font(.caption.monospaced())
+                                Label(String(f.lastPathComponent.prefix(28)) + "…", systemImage: "doc.badge.gearshape").font(.caption.monospaced()).sensitive(4)
                             }
                             .buttonStyle(.glass).controlSize(.small)
                         }
@@ -230,7 +230,7 @@ struct ConnectSheet: View {
                                 Button { load(url) } label: {
                                     HStack(spacing: 6) {
                                         Image(systemName: keyFile == url ? "checkmark.circle.fill" : (isApple ? "key.horizontal" : "doc.badge.gearshape"))
-                                        Text(url.lastPathComponent).font(.callout.monospaced())
+                                        Text(url.lastPathComponent).font(.callout.monospaced()).sensitive(5)
                                     }
                                     .padding(.horizontal, 4)
                                 }
@@ -247,6 +247,7 @@ struct ConnectSheet: View {
                 TextField("Path", text: $path, prompt: Text(isApple ? "Drop, choose or paste the path of AuthKey_….p8" : "Drop, choose or paste the path of the .json key"))
                     .labelsHidden()
                     .font(.callout.monospaced())
+                    .sensitive(5)
                     .onSubmit { load(URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)) }
                 Button("Choose…") { importing = true }
             }
@@ -255,15 +256,15 @@ struct ConnectSheet: View {
             if isApple {
                 LabeledContent("Key ID") {
                     TextField("Key ID", text: $keyID, prompt: Text("e.g. 2X9R4HXF34"))
-                        .labelsHidden().multilineTextAlignment(.trailing).font(.body.monospaced())
+                        .labelsHidden().multilineTextAlignment(.trailing).font(.body.monospaced()).sensitive(5)
                 }
                 LabeledContent("Issuer ID") {
                     TextField("Issuer ID", text: $issuerID, prompt: Text("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"))
-                        .labelsHidden().multilineTextAlignment(.trailing).font(.body.monospaced())
+                        .labelsHidden().multilineTextAlignment(.trailing).font(.body.monospaced()).sensitive(5)
                 }
             } else if let secret, let sa = try? ServiceAccount(json: secret) {
-                LabeledContent("Service account") { Text(sa.email).font(.callout.monospaced()).textSelection(.enabled) }
-                LabeledContent("Cloud project") { Text(sa.projectID).font(.callout.monospaced()) }
+                LabeledContent("Service account") { Text(sa.email).font(.callout.monospaced()).textSelection(.enabled).sensitive(5) }
+                LabeledContent("Cloud project") { Text(sa.projectID).font(.callout.monospaced()).sensitive(5) }
             }
         }
     }
@@ -272,6 +273,7 @@ struct ConnectSheet: View {
         Section {
             TextField("Package names", text: $packages, prompt: Text("com.example.app, com.example.other"), axis: .vertical)
                 .font(.callout.monospaced())
+                .sensitive(5)
                 .lineLimit(1...4)
                 .onChange(of: packages) { verified = nil }
             if !suggestions.isEmpty {
@@ -285,7 +287,7 @@ struct ConnectSheet: View {
                                 if on { list.removeAll { $0 == s } } else { list.append(s) }
                                 packages = list.joined(separator: ", ")
                             } label: {
-                                Label(s, systemImage: on ? "checkmark" : "plus").font(.caption.monospaced())
+                                Label(s, systemImage: on ? "checkmark" : "plus").font(.caption.monospaced()).sensitive(4)
                             }
                             .buttonStyle(.glass).controlSize(.small)
                         }
@@ -303,16 +305,31 @@ struct ConnectSheet: View {
     private var placeSection: some View {
         Section("Where it belongs") {
             if !userMode {
-            Picker("Account", selection: $accountChoice) {
-                ForEach(accounts) { a in Text(a.name).tag(Optional(a.id)) }
-                Text("New account…").tag(UUID?.none)
+            LabeledContent("Account") {
+                Picker("Account", selection: $accountChoice) {
+                    ForEach(accounts) { a in Text(a.name).tag(Optional(a.id)) }
+                    Text("New account…").tag(UUID?.none)
+                }
+                .labelsHidden()
+                .fixedSize()
+                .sensitive(accountChoice == nil ? 0 : 5)
             }
             if accountChoice == nil {
-                TextField("Account name", text: $accountName, prompt: Text(isApple ? "e.g. My Apple ID" : "e.g. Work Google account"))
-                if isApple { TextField("Apple ID email (optional)", text: $email) }
+                LabeledContent("Account name") {
+                    TextField("Account name", text: $accountName, prompt: Text(isApple ? "e.g. My Apple ID" : "e.g. Work Google account"))
+                        .labelsHidden().multilineTextAlignment(.trailing).sensitive(5)
+                }
+                if isApple {
+                    LabeledContent("Apple ID email (optional)") {
+                        TextField("Apple ID email", text: $email).labelsHidden().multilineTextAlignment(.trailing).sensitive(5)
+                    }
+                }
             }
             }
-            TextField(isApple ? "Team name" : "Developer account name", text: $teamName, prompt: Text("e.g. Client team"))
+            LabeledContent(isApple ? "Team name" : "Developer account name") {
+                TextField("Name", text: $teamName, prompt: Text("e.g. Client team"))
+                    .labelsHidden().multilineTextAlignment(.trailing).sensitive(5)
+            }
         }
     }
 
@@ -326,20 +343,20 @@ struct ConnectSheet: View {
                 switch v {
                 case .apple(let teamID, let apps):
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Key works · team \(teamID ?? "unknown") · \(apps.count) apps", systemImage: "checkmark.seal.fill")
+                        Label("Key works · \(apps.count) apps", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(Palette.mint)
                         Text(apps.prefix(8).map(\.name).joined(separator: " · ") + (apps.count > 8 ? " …" : ""))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary).sensitive(4)
                     }
                 case .google(let mail, _, let results):
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Google accepted \(mail)", systemImage: "checkmark.seal.fill").foregroundStyle(Palette.mint)
+                        Label("Google accepted \(mail)", systemImage: "checkmark.seal.fill").foregroundStyle(Palette.mint).sensitive(4)
                         ForEach(results, id: \.0) { pkg, problem in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: problem == nil ? "checkmark.circle.fill" : "person.badge.key.fill")
                                     .foregroundStyle(problem == nil ? Palette.mint : StateTone.waiting.color)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(pkg).font(.callout.monospaced())
+                                    Text(pkg).font(.callout.monospaced()).sensitive(4)
                                     if let problem { Text(problem).font(.caption).foregroundStyle(.secondary) }
                                 }
                             }

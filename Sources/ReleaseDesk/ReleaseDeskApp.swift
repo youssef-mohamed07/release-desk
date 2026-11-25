@@ -11,6 +11,7 @@ struct ReleaseDeskApp: App {
         Window("Release Desk", id: "main") {
             RootView()
                 .environment(model)
+                .environment(\.privacyMode, model.privacy)
                 .frame(minWidth: 1100, minHeight: 720)
         }
         .windowStyle(.hiddenTitleBar)
@@ -23,6 +24,10 @@ struct ReleaseDeskApp: App {
                 Button("Connect App Store Connect…") { model.connecting = .apple }
                 Button("Connect Google Play…") { model.connecting = .google }
             }
+            CommandGroup(after: .sidebar) {
+                Toggle("Privacy Mode", isOn: Binding(get: { model.privacy }, set: { model.privacy = $0 }))
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
             CommandMenu("Release") {
                 Button("Refresh") { Task { await model.refreshAll() } }.keyboardShortcut("r")
                 Button("Overview") { model.route = .overview }.keyboardShortcut("1")
@@ -31,7 +36,7 @@ struct ReleaseDeskApp: App {
         }
 
         MenuBarExtra {
-            MenuBarRuns().environment(model)
+            MenuBarRuns().environment(model).environment(\.privacyMode, model.privacy)
         } label: {
             Image(systemName: model.runningCount > 0 ? "paperplane.circle.fill" : "paperplane")
         }
@@ -80,7 +85,7 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .sheet(item: $model.connecting) { provider in
-            ConnectSheet(provider: provider)
+            ConnectSheet(provider: provider).environment(\.privacyMode, model.privacy)
         }
         .overlay {
             if model.palette {
@@ -147,9 +152,13 @@ struct MiniRun: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AppIcon(url: model.iconURL(run.plan.app.id, size: 64), name: run.plan.app.name, size: 32)
+            AppIcon(url: model.iconURL(run.plan.app.id, size: 64), name: run.plan.app.name, size: 32).sensitive(8)
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(run.plan.app.name) \(run.plan.version) (\(run.plan.build))").font(.callout.weight(.medium))
+                HStack(spacing: 4) {
+                    Text(run.plan.app.name).sensitive()
+                    Text("\(run.plan.version) (\(run.plan.build))")
+                }
+                .font(.callout.weight(.medium))
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(statusLine).font(.caption).foregroundStyle(.secondary)
                 }

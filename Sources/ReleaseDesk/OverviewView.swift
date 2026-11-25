@@ -36,7 +36,11 @@ struct OverviewView: View {
         let teamCount = model.allTeams.count
         let testing = model.apps.values.filter { $0.builds.first?.externalState == "IN_BETA_TESTING" || $0.builds.first?.internalState == "IN_BETA_TESTING" }.count
         return VStack(alignment: .leading, spacing: 6) {
-            Text(greeting).font(.system(size: 30, weight: .bold, design: .rounded))
+            HStack(spacing: 8) {
+                Text(greeting.part)
+                if !greeting.name.isEmpty { Text(greeting.name).sensitive(10) }
+            }
+            .font(.system(size: 30, weight: .bold, design: .rounded))
             HStack(spacing: 14) {
                 Stat(value: "\(appsCount)", label: "apps")
                 Stat(value: "\(teamCount)", label: teamCount == 1 ? "team" : "teams")
@@ -46,11 +50,11 @@ struct OverviewView: View {
         }
     }
 
-    private var greeting: String {
+    private var greeting: (part: String, name: String) {
         let first = NSFullUserName().split(separator: " ").first.map(String.init) ?? ""
         let h = Calendar.current.component(.hour, from: Date())
         let part = h < 12 ? "Good morning" : (h < 18 ? "Good afternoon" : "Good evening")
-        return first.isEmpty ? part : "\(part), \(first)"
+        return (first.isEmpty ? part : part + ",", first)
     }
 
     private var inFlight: some View {
@@ -71,9 +75,9 @@ struct OverviewView: View {
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 ProviderMark(provider: account.provider, size: 15)
-                Text(team.name).font(.title3.weight(.semibold))
-                if let id = team.teamID { Text(id).font(.callout.monospaced()).foregroundStyle(.secondary) }
-                Text("· \(account.name)").font(.callout).foregroundStyle(.tertiary)
+                Text(team.name).font(.title3.weight(.semibold)).sensitive()
+                if let id = team.teamID { Text(id).font(.callout.monospaced()).foregroundStyle(.secondary).sensitive() }
+                Text("· \(account.name)").font(.callout).foregroundStyle(.tertiary).sensitive()
                 Spacer()
                 if state?.loading == true { ProgressView().controlSize(.small) }
             }
@@ -113,10 +117,10 @@ struct AppCard: View {
         Button { model.route = .app(app.id) } label: {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
-                    AppIcon(url: model.iconURL(app.id), name: app.name, size: 52)
+                    AppIcon(url: model.iconURL(app.id), name: app.name, size: 52).sensitive(10)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(app.name).font(.headline).lineLimit(1)
-                        Text(app.bundleID).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                        Text(app.name).font(.headline).lineLimit(1).sensitive()
+                        Text(app.bundleID).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).sensitive()
                     }
                     Spacer(minLength: 0)
                     if let run = model.activeRun(for: app.id) {
@@ -248,11 +252,12 @@ struct TeamView: View {
                         }
                         .frame(width: 56, height: 56)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(team.name).font(.system(size: 26, weight: .bold, design: .rounded))
+                            Text(team.name).font(.system(size: 26, weight: .bold, design: .rounded)).sensitive(10)
                             Text(Array(NSOrderedSet(array: [team.teamID.map { "Team \($0)" }, team.credential.summary, account.name]
                                 .compactMap { $0 }.filter { s in !team.credential.summary.hasSuffix(s) || s == team.credential.summary })) .compactMap { $0 as? String }
                                 .joined(separator: " · "))
                                 .foregroundStyle(.secondary)
+                                .sensitive()
                         }
                         Spacer()
                         Button { Task { await model.refresh(team: team) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }

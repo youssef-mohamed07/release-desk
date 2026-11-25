@@ -45,9 +45,9 @@ struct HistoryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AppIcon(url: model.iconURL(record.appID, size: 64), name: record.appName, size: 30)
+            AppIcon(url: model.iconURL(record.appID, size: 64), name: record.appName, size: 30).sensitive(8)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(record.appName) \(record.version) (\(record.build))").fontWeight(.medium)
+                HStack(spacing: 4) { Text(record.appName).sensitive(); Text("\(record.version) (\(record.build))") }.fontWeight(.medium)
                 Text(record.started.short + (record.finished.map { " · \(clock($0.timeIntervalSince(record.started)))" } ?? ""))
                     .font(.caption).foregroundStyle(.secondary)
             }

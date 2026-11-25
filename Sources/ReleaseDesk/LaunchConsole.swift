@@ -44,21 +44,22 @@ struct LaunchConsole: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            AppIcon(url: model.iconURL(run.plan.app.id, size: 256), name: run.plan.app.name, size: 58)
+            AppIcon(url: model.iconURL(run.plan.app.id, size: 256), name: run.plan.app.name, size: 58).sensitive(10)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 10) {
-                    Text(run.plan.app.name).font(.system(size: 24, weight: .bold, design: .rounded))
+                    Text(run.plan.app.name).font(.system(size: 24, weight: .bold, design: .rounded)).sensitive(10)
                     Text("\(run.plan.version) (\(run.plan.build))").font(.system(size: 24, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.6))
                 }
                 HStack(spacing: 8) {
                     PhaseBadge(run: run)
                     if run.plan.rehearsal { Chip(text: "Rehearsal", symbol: "theatermasks") }
-                    ForEach(run.plan.groups) { g in Chip(text: g.name, symbol: g.isInternal ? "building.2" : "globe") }
+                    ForEach(run.plan.groups) { g in Chip(text: g.name, symbol: g.isInternal ? "building.2" : "globe", sensitive: true) }
                     if let t = run.plan.play {
                         Chip(text: "\(t.track) · \(t.status == "inProgress" ? "\(Int((t.userFraction ?? 0) * 100))%" : t.status)", symbol: "road.lanes")
                     }
                     if run.plan.startAt != nil { Chip(text: "Resumed", symbol: "arrow.clockwise") }
+                    if run.plan.cloud != nil { Chip(text: "GitHub Actions", symbol: "cloud") }
                     if run.plan.submitForReview && run.plan.groups.contains(where: { !$0.isInternal }) && !run.plan.rehearsal {
                         Chip(text: "Beta review", symbol: "checkmark.shield")
                     }
@@ -82,6 +83,10 @@ struct LaunchConsole: View {
 
     @ViewBuilder
     private var actions: some View {
+        if let url = run.cloudRunURL {
+            Link(destination: url) { Label("On GitHub", systemImage: "arrow.up.right.square") }
+                .buttonStyle(.glass).controlSize(.large)
+        }
         if run.phase == .running {
             Button(role: .destructive) { confirmCancel = true } label: { Label("Stop", systemImage: "stop.fill") }
                 .buttonStyle(.glass).controlSize(.large)
@@ -202,7 +207,7 @@ struct Station: View {
                     }
                 }
                 if let sub = subtitle {
-                    Text(sub).font(.caption).foregroundStyle(subtitleColor).lineLimit(2)
+                    Text(sub).font(.caption).foregroundStyle(subtitleColor).lineLimit(2).sensitive(4)
                 }
             }
             .padding(.top, 7)
@@ -348,6 +353,7 @@ struct LogRow: View {
             Text(line.step.rawValue).foregroundStyle(stepColor.opacity(0.75)).frame(width: 70, alignment: .leading)
             Text(line.text).foregroundStyle(color).fontWeight(line.kind == .output ? .regular : .medium)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .sensitive(4)
         }
         .font(.system(size: 11.5, design: .monospaced))
     }
