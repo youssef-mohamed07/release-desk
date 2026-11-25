@@ -1,59 +1,67 @@
 # Release Desk
 
-A native macOS app for shipping mobile apps to App Store Connect and Google Play: every account and team kept apart, every app, build, TestFlight group, Play track and version in one place, and a release pipeline you launch with one button and watch step by step.
+A native macOS app for shipping mobile apps to **App Store Connect / TestFlight** and **Google Play**. It keeps every account and team apart, shows every app, build, tester group, Play track and version in one place, and ships an update with one button. You watch each step as it runs, on your Mac or on GitHub Actions.
 
-## Run it
+![Overview](docs/03-overview.jpg)
+
+▶︎ **Tour video (2 min, Arabic captions):** download `Release-Desk-Tour.mp4` from the [latest release](../../releases/latest).
+
+## Install
+
+1. Download `ReleaseDesk-<version>.zip` from [Releases](../../releases/latest), unzip it, and move **Release Desk** to Applications.
+2. The app is not notarized yet, so macOS stops it the first time. Open it once, then go to **System Settings → Privacy & Security → Open Anyway**. You can also run this:
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Release Desk.app"
+   ```
+3. Needs **macOS 26** or later, on Apple silicon or Intel. To build apps on this Mac you also need Xcode and Flutter. With GitHub Actions builds, you don't.
+
+## What it does
+
+| | |
+|---|---|
+| ![App](docs/07-app.jpg) | **Accounts → teams → apps.** Connect an App Store Connect API key per team. The `.p8` file is found for you, checked with Apple, and kept in your Keychain. Each app page shows its builds as tickets, its TestFlight groups with tester counts and invite links, and its App Store versions. |
+| ![Ship](docs/08-ship.jpg) | **Ship.** Link the Flutter project once. Release Desk suggests the build number, the tester groups and the What to Test text for each language, and lists the commits since the last upload. **Rehearsal** archives, signs and exports without uploading. **Launch** does the whole run. |
+| ![Done](docs/13-done.jpg) | **Watch it.** The steps run in order: archive, pre-sign, export with cloud signing, upload, processing, What to Test, groups, beta review, and live for testers. A live log runs next to them. If a step fails after the upload, you resume from that point. You also get notifications, a menu bar item and a Dock badge. |
+| ![Cloud](docs/14-cloud.jpg) | **No Mac needed for the build.** Choose **Build on → GitHub Actions**. Release Desk adds a workflow to your project and sets the repository's secrets from the team's key, using the GitHub CLI. A GitHub macOS runner archives, signs and uploads, and Release Desk then does the TestFlight steps through the API. |
+| ![Play](docs/09-play.jpg) | **Google Play.** Sign in with your own Google account. Each app shows its tracks (internal, closed, open, production) and their releases. Ship builds an app bundle, refuses a debug-signed one, uploads it, and releases it to the track you choose: full, staged with a percentage, or as a draft. |
+
+Also: **⌘K** jumps to any app, team or action. **Privacy mode** (⇧⌘P, the eye in the sidebar) blurs names, emails, ids, paths, notes and logs so you can share your screen. Every screenshot here was taken with it on. You can drop a `.p8` or `.json` on the window or on the Dock icon to connect it, and release notes are kept as drafts.
+
+## Set up
+
+**App Store Connect.** In App Store Connect go to Users and Access → Integrations → App Store Connect API, and create a key with the App Manager or Admin role. Then in Release Desk use **Connect → App Store Connect**, pick the `.p8` file, and paste the Issuer ID.
+
+**Google Play.** Release Desk signs in with an OAuth client that you own:
+1. In Google Cloud, create a project, then turn on the **Google Play Android Developer API** and the **Google Play Developer Reporting API**.
+2. Set up the OAuth consent screen (Audience: External) and add your Google account as a test user.
+3. Create an OAuth client of type **Desktop app** and download its `client_secret_….json`.
+4. In Release Desk use **Connect → Google Play**, give it that file, then **Sign in with Google**.
+
+You can also connect a service account key instead. Invite the service account in Play Console under Users and permissions first.
+
+**GitHub Actions builds.** Sign in with the GitHub CLI (`gh auth login`), then choose **GitHub Actions** on the Ship screen. Commit and push the workflow that Release Desk adds (`.github/workflows/release-desk-ios.yml`). Keep in mind that macOS minutes on private repositories cost more than Linux minutes.
+
+## Build from source
 
 ```bash
-scripts/build-app.sh --open
+git clone https://github.com/youssef-mohamed07/release-desk.git
+cd release-desk
+scripts/build-app.sh --open   # signs with your Apple Development identity, or ad hoc
+swift test
 ```
 
-That builds `build/Release Desk.app` (release configuration), draws its icon, signs it with your first *Apple Development* identity (so Keychain access survives rebuilds), and opens it. Set `SIGN_IDENTITY` to pick another identity. Needs macOS 26 and Xcode 26 or later.
+`scripts/package.sh` makes the universal, ad-hoc signed zip that goes on the releases page. `scripts/make-tour-video.swift` renders the tour video from screenshots and captions.
 
-For development, `swift build` and `swift test` work as usual; `open Package.swift` opens it in Xcode.
+The command line tool `rdesk` (`swift run rdesk …`) reads the same data. It covers App Store Connect apps, builds, groups and versions, Play apps and tracks, and it prints the cloud workflow.
 
-## What it does today
+## Where things are kept
 
-- **Accounts → teams → apps.** Connect an App Store Connect API key per team (Connect sheet: it finds `AuthKey_*.p8` files in `~/.appstoreconnect/private_keys`, `~/private_keys` and `~/Downloads`, verifies the key against Apple and detects the team id before anything is saved). The private key goes to the login Keychain (service `app.releasedesk.credentials`); the rest lives in `~/Library/Application Support/Release Desk/workspace.json`.
-- **Overview.** Every app of every team with its real icon (from the latest build), latest build and a five-light lane: uploaded → processed → internal → beta review → external.
-- **App page.** Builds as tickets (state, groups, days left), TestFlight groups (tester counts, public link), App Store versions, the What to Test of any build.
-- **Ship.** Link the source folder once (Flutter projects under `~/Developer` that build the same bundle id are found for you). Compose: version, build number (next after App Store Connect's highest), tester groups, What to Test per locale (Arabic right-to-left), commits since the last upload, beta review on/off, rehearsal mode. Then launch and watch:
+- Keys and sign-ins: the login Keychain, under the service `app.releasedesk.credentials`.
+- Accounts, teams, project links and run history: `~/Library/Application Support/Release Desk/workspace.json`.
+- Run logs: `~/Library/Application Support/Release Desk/Logs/`.
 
-  1. Prepare: checks the project's bundle id, Flutter and Xcode, that the build number is free, writes `version: X+N` to `pubspec.yaml` (optional; never in a rehearsal).
-  2. Archive: `flutter build ipa --release --no-codesign --build-name --build-number`.
-  3. Pre-sign: ad-hoc signs frameworks and the app with the project's entitlements.
-  4. Export & sign: `xcodebuild -exportArchive -allowProvisioningUpdates` with the API key, so Apple's cloud signing makes the distribution signature (works for teams with no registered devices).
-  5. Upload: `xcrun altool --upload-app` with the key.
-  6. Apple processing: polls until the build is `VALID`.
-  7. What to Test: updates the localizations Apple copied from the last build, creates missing ones.
-  8. TestFlight groups: adds the build (build-side endpoint, retrying Apple's early 404s every 60 s; internal groups with every build get it on their own).
-  9. Beta review: submits when an external group is chosen.
-  10. Live for testers: waits for `IN_BETA_TESTING`.
+Nothing leaves your Mac except calls to Apple, Google and GitHub.
 
-  A rehearsal runs 1–4 and stops with the IPA. Logs are kept per run in `~/Library/Application Support/Release Desk/Logs`. The API key is written to a private temp file only for the run and deleted after.
-- **Google Play.** Sign in with your own Google account (Connect → Google Play → Sign in with Google). Release Desk needs a Desktop OAuth client once (`client_secret_….json` from a Google Cloud project with the Google Play Android Developer API and the Play Developer Reporting API on; your account as a test user while the consent screen is in Testing): drop the file on the window or pick it in the sheet, and it goes to the Keychain. A service account key works too. Play apps show their tracks and releases; Ship builds an app bundle, checks it is not debug-signed, uploads it and releases it to a track (full, staged rollout or draft).
-- **Comfort.** ⌘K jumps to any app, team or action. Drop a `.p8` or `.json` on the window or the Dock icon to connect it. Release notes are kept as drafts. A failed iOS run resumes from Apple processing once the upload is done. Linking a project links the same app on the other store.
-- **Menu bar and Dock.** Runs in flight show in the menu bar extra and as a Dock badge; a notification says when one lands or stops.
+## بالعربي
 
-## Command line
-
-`rdesk` reads the same API for scripts and quick checks:
-
-```bash
-swift run rdesk apps --key-id KEY_ID --issuer ISSUER_ID
-```
-
-Also `builds`, `groups`, `versions` (with `--app APP_ID`) and `team`. It reads the key from `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8` or `--key-file`.
-
-## Next
-
-- Play apps grouped by developer account (today one Google sign-in shows all its apps as one team).
-- New app wizard: register the bundle id and capabilities, create the App Store Connect record, create the Play app, first upload on both stores.
-- App Store review: version metadata checks and submit for review.
-
-## Layout
-
-- `Sources/ReleaseKit` — App Store Connect client (JWT ES256 with CryptoKit, JSON:API), Keychain, workspace, Flutter project reader, the release pipeline. No UI.
-- `Sources/ReleaseDesk` — the SwiftUI app.
-- `Sources/rdesk` — the command line front end.
-- `scripts/` — app bundle and icon builders.
+**Release Desk** تطبيق لنظام ماك يرفع تطبيقاتك على App Store و Google Play من مكان واحد. نزّل ملف zip من صفحة Releases وانقل التطبيق إلى Applications، وفي أول مرة افتحه من System Settings ← Privacy & Security ← Open Anyway. بعد ذلك اربط حساب Apple بمفتاح API، وسجّل الدخول بحساب Google، واختر مشروعك، ثم اضغط Launch. وإن لم يكن لديك ماك للبناء، اختر GitHub Actions ليبني ماك من GitHub التطبيق ويرفعه. الفيديو في صفحة Releases يشرح كل خطوة.

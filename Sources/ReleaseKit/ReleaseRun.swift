@@ -4,9 +4,11 @@ import Observation
 public enum StepID: String, CaseIterable, Sendable, Codable {
     case prepare, archive, sign, export, upload, processing, notes, groups, review, live
     case bundle, checkSigning, playRelease
+    case cloudBuild
 
-    public static func steps(for platform: Platform) -> [StepID] {
+    public static func steps(for platform: Platform, cloud: Bool = false) -> [StepID] {
         switch platform {
+        case .ios where cloud: [.prepare, .cloudBuild, .processing, .notes, .groups, .review, .live]
         case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .groups, .review, .live]
         case .android: [.prepare, .bundle, .checkSigning, .playRelease]
         }
@@ -27,6 +29,7 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .bundle: "Build app bundle"
         case .checkSigning: "Check signing"
         case .playRelease: "Upload & release"
+        case .cloudBuild: "Build on GitHub"
         }
     }
 
@@ -45,6 +48,7 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .bundle: "shippingbox"
         case .checkSigning: "signature"
         case .playRelease: "arrow.up.forward.app"
+        case .cloudBuild: "cloud"
         }
     }
 }
@@ -91,9 +95,16 @@ public struct PlayTarget: Sendable, Hashable {
     }
 }
 
+/// An iOS build made on a GitHub macOS runner instead of this Mac.
+public struct CloudBuild: Sendable, Hashable {
+    public var repo: GitHubRepo
+    public init(repo: GitHubRepo) { self.repo = repo }
+}
+
 /// Everything one release run needs, decided before it starts.
 public struct ReleasePlan: Sendable {
     public var platform: Platform = .ios
+    public var cloud: CloudBuild?
     public var play: PlayTarget?
     /// Resume: skip the steps before this one (iOS: only `.processing`).
     public var startAt: StepID?
@@ -142,22 +153,26 @@ public final class ReleaseRun: Identifiable {
     /// The .ipa or .aab this run built.
     public private(set) var ipa: URL?
     public private(set) var playVersionCode: String?
+    /// The GitHub Actions run of a cloud build.
+    public private(set) var cloudRunURL: URL?
     public private(set) var current: StepID?
     public let logFile: URL
 
     @ObservationIgnored public var onFinish: ((ReleaseRun) -> Void)?
     @ObservationIgnored private let apple: ASCClient?
     @ObservationIgnored private let play: PlayClient?
+    @ObservationIgnored private let github: GitHubClient?
     private var client: ASCClient { apple! }
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let sink: LogSink
     @ObservationIgnored private var nextLineID = 0
 
-    public init(plan: ReleasePlan, apple: ASCClient? = nil, play: PlayClient? = nil) {
+    public init(plan: ReleasePlan, apple: ASCClient? = nil, play: PlayClient? = nil, github: GitHubClient? = nil) {
         self.plan = plan
         self.apple = apple
         self.play = play
-        steps = StepID.steps(for: plan.platform).map { RunStep(id: $0) }
+        self.github = github
+        steps = StepID.steps(for: plan.platform, cloud: plan.cloud != nil).map { RunStep(id: $0) }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let safe = plan.app.name.replacingOccurrences(of: "/", with: "-")
         logFile = WorkspaceStore.logs.appendingPathComponent("\(safe) \(plan.version) (\(plan.build)) \(stamp).log")
@@ -240,7 +255,10 @@ public final class ReleaseRun: Identifiable {
         log("Release \(plan.app.name) \(plan.version) (\(plan.build)) from \(plan.projectRoot.path)")
         if plan.rehearsal { log("Rehearsal: stops after export, nothing is uploaded.", .warning) }
 
-        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.platform == .ios ? [
+        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.cloud != nil ? [
+            (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.processing, waitForProcessing), (.notes, writeNotes),
+            (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
+        ] : plan.platform == .ios ? [
             (.prepare, prepare), (.archive, archive), (.sign, preSign), (.export, export),
             (.upload, upload), (.processing, waitForProcessing), (.notes, writeNotes),
             (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
@@ -555,6 +573,86 @@ public final class ReleaseRun: Identifiable {
         return .warning("Still \(describeState(last).label.lowercased()). Apple emails when it is ready.")
     }
 
+    // MARK: - Cloud (GitHub Actions)
+
+    private func prepareCloud(_ ctx: inout Context) async throws -> StepState {
+        guard let cloud = plan.cloud, let github else { throw ReleaseError.precondition("No GitHub repository for this project") }
+        let who = try await github.login()
+        log("GitHub \(cloud.repo.fullName) as \(who), project folder \(cloud.repo.projectDir)")
+        detail(.prepare, "Checking App Store Connect")
+        let existing = try await client.builds(appID: plan.app.id, limit: 5, number: "\(plan.build)", version: plan.version)
+        if !existing.isEmpty {
+            throw ReleaseError.precondition("Build \(plan.version) (\(plan.build)) is already on App Store Connect. Pick a higher build number.")
+        }
+        detail(.prepare, "Checking the workflow")
+        guard try await github.hasWorkflow(cloud.repo) else {
+            throw ReleaseError.precondition("\(GitHubClient.workflowFile) is not on \(cloud.repo.fullName)'s default branch yet. Add it from the Ship screen and push it.")
+        }
+        let present = try await github.secretsPresent(cloud.repo)
+        let missing = GitHubClient.secretNames.filter { !present.contains($0) }
+        guard missing.isEmpty else {
+            throw ReleaseError.precondition("The repository has no \(missing.joined(separator: ", ")) secret yet. Set them from the Ship screen.")
+        }
+        log("Workflow and secrets are in place", .success)
+        if !plan.rehearsal, plan.recipe.writeBuildNumber, let project = try? FlutterProject.inspect(root, recipe: plan.recipe),
+           project.version != plan.version || project.buildNumber != plan.build {
+            try project.writeVersion(plan.version, build: plan.build)
+            log("pubspec.yaml → version: \(plan.version)+\(plan.build) (the cloud build gets the number as --build-number)", .success)
+        }
+        return .done
+    }
+
+    private func cloudBuild(_ ctx: inout Context) async throws -> StepState {
+        guard let cloud = plan.cloud, let github else { throw ReleaseError.precondition("No GitHub repository") }
+        let ref = try await github.defaultBranch(cloud.repo)
+        let marker = "rd-" + String(id.uuidString.prefix(8)).lowercased()
+        detail(.cloudBuild, "Starting on \(ref)")
+        log("Starting \(GitHubClient.workflowFile) on \(cloud.repo.fullName)@\(ref)\(plan.rehearsal ? " (no upload)" : "")")
+        var run = try await github.dispatch(cloud.repo, ref: ref, inputs: [
+            "version": plan.version, "build": "\(plan.build)", "upload": plan.rehearsal ? "false" : "true", "release_desk_id": marker,
+        ], marker: marker)
+        cloudRunURL = URL(string: run.htmlURL)
+        log("Run \(run.id): \(run.htmlURL)")
+        var seen: [String: String] = [:]
+        var jobID: Int?
+        let began = Date()
+        do {
+            while run.status != "completed" {
+                try await Task.sleep(for: .seconds(8))
+                run = try await github.run(cloud.repo, id: run.id)
+                let s = try await github.steps(cloud.repo, runID: run.id)
+                jobID = s.jobID ?? jobID
+                for step in s.steps {
+                    let state = step.conclusion ?? step.status
+                    guard seen[step.name] != state else { continue }
+                    seen[step.name] = state
+                    switch state {
+                    case "in_progress": log("▸ \(step.name)")
+                    case "success":
+                        let d = step.started.flatMap { a in step.completed.map { shortDuration($0.timeIntervalSince(a)) } } ?? ""
+                        log("✓ \(step.name) \(d)", .success)
+                    case "failure": log("✗ \(step.name)", .error)
+                    case "skipped": log("– \(step.name) skipped")
+                    default: break
+                    }
+                }
+                let current = s.steps.first { $0.status == "in_progress" }?.name ?? (run.status == "queued" ? "Waiting for a macOS runner" : run.status)
+                detail(.cloudBuild, "\(current) · \(Int(Date().timeIntervalSince(began) / 60)) min")
+            }
+        } catch {
+            if Task.isCancelled { await github.cancel(cloud.repo, runID: run.id); log("Cancelled the GitHub run") }
+            throw error
+        }
+        guard run.conclusion == "success" else {
+            if let jobID {
+                for line in await github.logTail(cloud.repo, jobID: jobID, lines: 30) { log(line, .output) }
+            }
+            throw ReleaseError.precondition("The GitHub run ended \(run.conclusion ?? "badly"). Its log is above and on GitHub.")
+        }
+        log(plan.rehearsal ? "Built and signed on GitHub" : "Built on GitHub and uploaded to App Store Connect", .success)
+        return .done
+    }
+
     // MARK: - Android
 
     private func prepareAndroid(_ ctx: inout Context) async throws -> StepState {
@@ -681,4 +779,9 @@ final class LogSink: @unchecked Sendable {
         handle?.write(Data(text.utf8))
         if Thread.isMainThread { deliver?(batch) } else { DispatchQueue.main.async { self.deliver?(batch) } }
     }
+}
+
+func shortDuration(_ t: TimeInterval) -> String {
+    let s = Int(max(0, t))
+    return s >= 60 ? "\(s / 60)m \(s % 60)s" : "\(s)s"
 }

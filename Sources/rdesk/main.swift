@@ -21,6 +21,12 @@ func fail(_ message: String) -> Never {
 guard let command = args.first else {
     fail("usage: rdesk apps|builds|groups|versions|team --key-id ID --issuer ISSUER [--app APP_ID] [--key-file PATH]")
 }
+// The GitHub Actions workflow for cloud builds: rdesk workflow [--dir mobile] [--team TEAMID] [--flutter 3.x]
+if command == "workflow" {
+    print(CloudWorkflow.yaml(projectDir: option("--dir") ?? ".", recipe: IOSRecipe(), teamID: option("--team"), flutterVersion: option("--flutter")))
+    exit(0)
+}
+
 // Google Play: rdesk play-apps|play-tracks --json SERVICE_ACCOUNT.json [--package PKG]
 if command.hasPrefix("play-") {
     guard let path = option("--json"), let json = try? String(contentsOfFile: path, encoding: .utf8) else { fail("--json SERVICE_ACCOUNT.json is required") }

@@ -100,6 +100,8 @@ public struct IOSRecipe: Codable, Hashable, Sendable {
     public var groupIDs: [String] = []
     public var submitForReview = true
     public var locales = ["ar-SA", "en-US"]
+    /// iOS: "github" to build on GitHub Actions instead of this Mac.
+    public var buildOn: String?
     /// Android: the track and status used last time.
     public var playTrack: String?
     public var playStatus: String?

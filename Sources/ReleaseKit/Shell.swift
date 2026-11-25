@@ -33,7 +33,7 @@ public enum Shell {
     /// Runs `exe` (a path, or a name looked up on PATH) and calls `onLine`
     /// for every line of stdout and stderr. Cancelling the task stops it.
     public static func run(_ exe: String, _ args: [String], cwd: URL? = nil, path: String? = nil,
-                           environment: [String: String] = [:],
+                           environment: [String: String] = [:], stdin: Data? = nil,
                            onLine: @escaping @Sendable (String) -> Void) async throws -> Int32 {
         let resolvedPATH: String
         if let path { resolvedPATH = path } else { resolvedPATH = await loginPATH() }
@@ -56,7 +56,8 @@ public enum Shell {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        process.standardInput = FileHandle.nullDevice
+        let input = stdin.map { _ in Pipe() }
+        process.standardInput = input ?? FileHandle.nullDevice
         let splitter = LineSplitter(onLine)
         // Read on a thread of its own until EOF, and only return once both the
         // output is drained and the process has exited. A tool that leaves a
@@ -75,6 +76,10 @@ public enum Shell {
                 }
                 do {
                     try process.run()
+                    if let input, let stdin {
+                        input.fileHandleForWriting.write(stdin)
+                        try? input.fileHandleForWriting.close()
+                    }
                     Thread.detachNewThread {
                         while true {
                             let d = reader.availableData
