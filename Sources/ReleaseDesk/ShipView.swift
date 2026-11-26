@@ -14,8 +14,10 @@ struct ShipView: View {
             if let run = model.latestRun(for: appID), !composing {
                 LaunchConsole(run: run, onNew: { composing = true })
             } else if let link = model.workspace.link(for: appID) {
-                if app.isPlay {
+                if app.isPlay || app.store == .huawei {
                     PlayShipComposer(app: app, link: link, onLaunch: { composing = false })
+                } else if app.store == .microsoft {
+                    WindowsShipComposer(app: app, link: link, onLaunch: { composing = false })
                 } else {
                     ShipComposer(app: app, link: link, onLaunch: { composing = false })
                 }
@@ -74,7 +76,7 @@ struct LinkProjectPanel: View {
                         .buttonStyle(.plain)
                     }
                     if !scanning && candidates.isEmpty {
-                        Text("No Flutter project in your project folders builds \(app.bundleID).").foregroundStyle(.secondary)
+                        Text(app.store == .microsoft ? "No Flutter project with Windows support in your project folders." : "No Flutter project in your project folders builds \(app.bundleID).").foregroundStyle(.secondary)
                     }
                     HStack(spacing: 8) {
                         TextField("Path", text: $path, prompt: Text("Paste or type a folder path"))
@@ -99,7 +101,11 @@ struct LinkProjectPanel: View {
         .task {
             let id = app.bundleID
             let roots = ProjectScanner.roots(model: model)
-            candidates = await Task.detached { ProjectScanner.projects(in: roots).filter { $0.iosBundleID == id || $0.androidPackage == id } }.value
+            // A Microsoft Store identity isn't in the Flutter project, so any project with Windows support fits.
+            let windows = app.store == .microsoft
+            candidates = await Task.detached {
+                ProjectScanner.projects(in: roots).filter { windows ? FileManager.default.fileExists(atPath: $0.root.appendingPathComponent("windows").path) : ($0.iosBundleID == id || $0.androidPackage == id) }
+            }.value
             scanning = false
         }
     }
@@ -108,7 +114,7 @@ struct LinkProjectPanel: View {
         do {
             let p = try FlutterProject.inspect(url)
             let builds = [p.iosBundleID, p.androidPackage].compactMap { $0 }
-            if !builds.isEmpty, !builds.contains(app.bundleID) {
+            if app.store != .microsoft, !builds.isEmpty, !builds.contains(app.bundleID) {
                 error = "That project builds \(builds.joined(separator: " and ")), not \(app.bundleID)."
             } else {
                 model.link(appID: app.id, path: url.path)

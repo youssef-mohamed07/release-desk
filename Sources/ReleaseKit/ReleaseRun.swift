@@ -3,15 +3,16 @@ import Observation
 
 public enum StepID: String, CaseIterable, Sendable, Codable {
     case prepare, archive, sign, export, upload, processing, notes, storeNotes, groups, review, live
-    case bundle, checkSigning, playRelease
-    case cloudBuild
+    case bundle, checkSigning, playRelease, agcRelease
+    case cloudBuild, msSubmit
 
     public static func steps(for platform: Platform, cloud: Bool = false) -> [StepID] {
         switch platform {
         case .ios where cloud: [.prepare, .cloudBuild, .processing, .notes, .storeNotes, .groups, .review, .live]
         case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .storeNotes, .groups, .review, .live]
-        case .android where cloud: [.prepare, .cloudBuild, .playRelease]
-        case .android: [.prepare, .bundle, .checkSigning, .playRelease]
+        case .android where cloud: [.prepare, .cloudBuild, .playRelease, .agcRelease]
+        case .android: [.prepare, .bundle, .checkSigning, .playRelease, .agcRelease]
+        case .windows: [.prepare, .cloudBuild, .msSubmit]
         }
     }
 
@@ -30,8 +31,10 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .live: "Live for testers"
         case .bundle: "Build app bundle"
         case .checkSigning: "Check signing"
-        case .playRelease: "Upload & release"
+        case .playRelease: "Google Play"
+        case .agcRelease: "AppGallery"
         case .cloudBuild: "Build on GitHub"
+        case .msSubmit: "Microsoft Store"
         }
     }
 
@@ -51,7 +54,9 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .bundle: "shippingbox"
         case .checkSigning: "signature"
         case .playRelease: "arrow.up.forward.app"
+        case .agcRelease: "bag"
         case .cloudBuild: "cloud"
+        case .msSubmit: "storefront"
         }
     }
 }
@@ -82,7 +87,31 @@ public struct LogLine: Identifiable, Sendable, Hashable {
     public let text: String
 }
 
-public enum Platform: String, Codable, Sendable { case ios, android }
+public enum Platform: String, Codable, Sendable { case ios, android, windows }
+
+/// Where a Windows release goes in the Microsoft Store.
+public struct MSTarget: Sendable, Hashable {
+    /// The Store ID, like 9NBLGGH4R315.
+    public var appID: String
+    /// Package rollout percentage; 0 for everyone at once.
+    public var rollout: Int
+
+    public init(appID: String, rollout: Int) {
+        self.appID = appID
+        self.rollout = rollout
+    }
+}
+
+/// Where an Android release goes on AppGallery.
+public struct AGCTarget: Sendable, Hashable {
+    public var appID: String
+    public var release: AGCRelease
+
+    public init(appID: String, release: AGCRelease) {
+        self.appID = appID
+        self.release = release
+    }
+}
 
 /// Where an Android release goes on Play.
 public struct PlayTarget: Sendable, Hashable {
@@ -113,6 +142,10 @@ public struct ReleasePlan: Sendable {
     public var platform: Platform = .ios
     public var cloud: CloudBuild?
     public var play: PlayTarget?
+    /// Android: also (or only) to Huawei AppGallery.
+    public var appGallery: AGCTarget?
+    /// Windows: the Microsoft Store app.
+    public var microsoft: MSTarget?
     /// Resume: skip the steps before this one (iOS: only `.processing`).
     public var startAt: StepID?
     public var app: ASCApp
@@ -170,18 +203,25 @@ public final class ReleaseRun: Identifiable {
     @ObservationIgnored public var onFinish: ((ReleaseRun) -> Void)?
     @ObservationIgnored private let apple: ASCClient?
     @ObservationIgnored private let play: PlayClient?
+    @ObservationIgnored private let appGallery: AppGalleryClient?
+    @ObservationIgnored private let microsoft: MicrosoftStoreClient?
     @ObservationIgnored private let github: GitHubClient?
     private var client: ASCClient { apple! }
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let sink: LogSink
     @ObservationIgnored private var nextLineID = 0
 
-    public init(plan: ReleasePlan, apple: ASCClient? = nil, play: PlayClient? = nil, github: GitHubClient? = nil) {
+    public init(plan: ReleasePlan, apple: ASCClient? = nil, play: PlayClient? = nil, appGallery: AppGalleryClient? = nil,
+                microsoft: MicrosoftStoreClient? = nil, github: GitHubClient? = nil) {
         self.plan = plan
         self.apple = apple
         self.play = play
+        self.appGallery = appGallery
+        self.microsoft = microsoft
         self.github = github
-        steps = StepID.steps(for: plan.platform, cloud: plan.cloud != nil).map { RunStep(id: $0) }
+        steps = StepID.steps(for: plan.platform, cloud: plan.cloud != nil)
+            .filter { ($0 != .playRelease || plan.play != nil) && ($0 != .agcRelease || plan.appGallery != nil) }
+            .map { RunStep(id: $0) }
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let safe = plan.app.name.replacingOccurrences(of: "/", with: "-")
         logFile = WorkspaceStore.logs.appendingPathComponent("\(safe) \(plan.version) (\(plan.build)) \(stamp).log")
@@ -264,8 +304,10 @@ public final class ReleaseRun: Identifiable {
         log("Release \(plan.app.name) \(plan.version) (\(plan.build)) from \(plan.projectRoot.path)")
         if plan.rehearsal { log("Rehearsal: stops after export, nothing is uploaded.", .warning) }
 
-        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.cloud?.target == .android ? [
-            (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.playRelease, releaseToPlay),
+        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.cloud?.target == .windows ? [
+            (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.msSubmit, submitToMicrosoft),
+        ] : plan.cloud?.target == .android ? [
+            (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.playRelease, releaseToPlay), (.agcRelease, releaseToAppGallery),
         ] : plan.cloud != nil ? [
             (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.processing, waitForProcessing), (.notes, writeNotes),
             (.storeNotes, writeStoreNotes), (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
@@ -275,10 +317,11 @@ public final class ReleaseRun: Identifiable {
             (.storeNotes, writeStoreNotes), (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
         ] : [
             (.prepare, prepareAndroid), (.bundle, buildBundle), (.checkSigning, checkSigning), (.playRelease, releaseToPlay),
+            (.agcRelease, releaseToAppGallery),
         ]
-        let remote: Set<StepID> = [.upload, .processing, .notes, .storeNotes, .groups, .review, .live, .playRelease]
+        let remote: Set<StepID> = [.upload, .processing, .notes, .storeNotes, .groups, .review, .live, .playRelease, .agcRelease, .msSubmit]
         var resuming = plan.startAt != nil
-        for (id, body) in order {
+        for (id, body) in order where steps.contains(where: { $0.id == id }) {
             if Task.isCancelled { break }
             if resuming, id != plan.startAt {
                 set(id, .skipped("Done in the earlier run"))
@@ -616,13 +659,10 @@ public final class ReleaseRun: Identifiable {
             if !existing.isEmpty {
                 throw ReleaseError.precondition("Build \(plan.version) (\(plan.build)) is already on App Store Connect. Pick a higher build number.")
             }
-        } else if let play {
-            detail(.prepare, "Checking Play")
-            let highest = try await play.overview(package: plan.app.bundleID).tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0
-            log("Highest version code on Play: \(highest)")
-            if plan.build <= highest, !plan.rehearsal {
-                throw ReleaseError.precondition("Version code \(plan.build) is not above Play's highest (\(highest)).")
-            }
+        } else if cloud.target == .windows {
+            try await checkMicrosoft()
+        } else {
+            try await checkAndroidStores()
         }
         detail(.prepare, "Checking the workflow")
         guard try await github.hasWorkflow(cloud.repo, file: cloud.target.workflowFile) else {
@@ -650,6 +690,10 @@ public final class ReleaseRun: Identifiable {
         log("Starting \(cloud.target.workflowFile) on \(cloud.repo.fullName)@\(ref)\(plan.rehearsal && cloud.target == .ios ? " (no upload)" : "")")
         var inputs = ["version": plan.version, "build": "\(plan.build)", "release_desk_id": marker]
         if cloud.target == .ios { inputs["upload"] = plan.rehearsal ? "false" : "true" }
+        if cloud.target == .windows {
+            inputs["rollout"] = "\(plan.microsoft?.rollout ?? 0)"
+            inputs["upload"] = plan.rehearsal ? "false" : "true"
+        }
         var run = try await github.dispatch(cloud.repo, file: cloud.target.workflowFile, ref: ref, inputs: inputs, marker: marker)
         cloudRunURL = URL(string: run.htmlURL)
         log("Run \(run.id): \(run.htmlURL)")
@@ -676,7 +720,7 @@ public final class ReleaseRun: Identifiable {
                     default: break
                     }
                 }
-                let current = s.steps.first { $0.status == "in_progress" }?.name ?? (run.status == "queued" ? "Waiting for a macOS runner" : run.status)
+                let current = s.steps.first { $0.status == "in_progress" }?.name ?? (run.status == "queued" ? "Waiting for a \(cloud.target.runner) runner" : run.status)
                 detail(.cloudBuild, "\(current) · \(Int(Date().timeIntervalSince(began) / 60)) min")
             }
         } catch {
@@ -702,8 +746,65 @@ public final class ReleaseRun: Identifiable {
             log("Built on GitHub: \(aab.lastPathComponent) · \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))", .success)
             return .done
         }
+        if cloud.target == .windows {
+            log(plan.rehearsal ? "Built the MSIX on GitHub (not uploaded)" : "Built the MSIX on GitHub and uploaded it to a draft submission", .success)
+            return .done
+        }
         log(plan.rehearsal ? "Built and signed on GitHub" : "Built on GitHub and uploaded to App Store Connect", .success)
         return .done
+    }
+
+    // MARK: - Microsoft Store
+
+    /// Before a Windows build: the project is set up for the Store, and Partner Center knows the app.
+    private func checkMicrosoft() async throws {
+        let pubspec = (try? String(contentsOf: root.appendingPathComponent("pubspec.yaml"), encoding: .utf8)) ?? ""
+        guard pubspec.contains("msix_config:") else {
+            throw ReleaseError.precondition("pubspec.yaml has no msix_config yet. Run `msstore init .` once in the project (it adds the msix package and the Store identity), commit it, and push.")
+        }
+        if let target = plan.microsoft, let line = pubspec.split(separator: "\n").first(where: { $0.contains("msstore_appId:") }),
+           !line.contains(target.appID) {
+            log("pubspec.yaml's msstore_appId is not \(target.appID): \(line.trimmingCharacters(in: .whitespaces))", .warning)
+        }
+        guard let microsoft, let target = plan.microsoft else { throw ReleaseError.precondition("No Microsoft Store account for this app") }
+        detail(.prepare, "Checking Partner Center")
+        let app = try await microsoft.application(target.appID)
+        guard app.lastSubmissionID != nil else {
+            throw ReleaseError.precondition("\(app.name) has never been published. Its first submission has to be made in Partner Center.")
+        }
+        log("Microsoft Store: \(app.name) (\(app.id))\(app.pendingSubmissionID != nil ? ", a draft submission exists and will be replaced" : "")")
+    }
+
+    private func submitToMicrosoft(_ ctx: inout Context) async throws -> StepState {
+        guard let microsoft, let target = plan.microsoft else { throw ReleaseError.precondition("No Microsoft Store account for this app") }
+        let app = try await microsoft.application(target.appID)
+        guard let sub = app.pendingSubmissionID else {
+            throw ReleaseError.precondition("Partner Center has no draft submission from the GitHub run.")
+        }
+        if !plan.whatsNew.isEmpty {
+            detail(.msSubmit, "What's new")
+            for line in try await microsoft.setReleaseNotes(appID: target.appID, submissionID: sub, notes: plan.whatsNew) {
+                log("What's new \(line)")
+            }
+        }
+        detail(.msSubmit, "Committing")
+        try await microsoft.commit(appID: target.appID, submissionID: sub)
+        log("Submission \(sub) committed")
+        for _ in 0..<90 {
+            try await Task.sleep(for: .seconds(20))
+            let (status, errors) = try await microsoft.status(appID: target.appID, submissionID: sub)
+            detail(.msSubmit, status)
+            switch status {
+            case "CommitStarted", "PendingCommit": continue
+            case let s where s.hasSuffix("Failed"):
+                for e in errors { log(e, .error) }
+                throw ReleaseError.precondition("Partner Center: \(s)\(errors.isEmpty ? "" : ". " + errors.joined(separator: "; "))")
+            default:
+                log("Partner Center: \(status). Certification usually takes up to three business days.", .success)
+                return .done
+            }
+        }
+        return .warning("Partner Center is still processing the commit. Check the submission in Partner Center.")
     }
 
     // MARK: - Android
@@ -712,7 +813,7 @@ public final class ReleaseRun: Identifiable {
         let project = try FlutterProject.inspect(root, recipe: plan.recipe)
         log("Flutter project \(project.name), pubspec \(project.version)+\(project.buildNumber), package \(project.androidPackage ?? "?")")
         if let pkg = project.androidPackage, pkg != plan.app.bundleID {
-            throw ReleaseError.precondition("The project builds \(pkg), but the Play app is \(plan.app.bundleID).")
+            throw ReleaseError.precondition("The project builds \(pkg), but the store app is \(plan.app.bundleID).")
         }
         let flutter = try await Shell.capture("flutter", ["--version", "--machine"], cwd: root)
         if let start = flutter.firstIndex(of: "{"), let json = try? JSONDecoder().decode(JSONValue.self, from: Data(flutter[start...].utf8)) {
@@ -723,15 +824,7 @@ public final class ReleaseRun: Identifiable {
             let text = "No android/key.properties: the bundle would be signed with the debug key, which Play refuses."
             if plan.rehearsal { warning = text } else { throw ReleaseError.precondition(text) }
         }
-        if let play {
-            detail(.prepare, "Checking Play")
-            let tracks = try await play.overview(package: plan.app.bundleID).tracks
-            let highest = tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0
-            log("Highest version code on Play: \(highest)")
-            if plan.build <= highest, !plan.rehearsal {
-                throw ReleaseError.precondition("Version code \(plan.build) is not above Play's highest (\(highest)).")
-            }
-        }
+        try await checkAndroidStores()
         if plan.rehearsal {
             log("Rehearsal leaves pubspec.yaml as it is.")
         } else if plan.recipe.writeBuildNumber, project.version != plan.version || project.buildNumber != plan.build {
@@ -784,6 +877,47 @@ public final class ReleaseRun: Identifiable {
         playVersionCode = result.versionCode
         log("Released \(plan.version) (\(result.versionCode)) to \(target.track)", .success)
         return result.status == target.status ? .done : .warning("Saved as a \(result.status) release: this app is not published on Play yet.")
+    }
+
+    /// Before an Android build: Play takes the version code, AppGallery knows the app.
+    private func checkAndroidStores() async throws {
+        if let play, plan.play != nil {
+            detail(.prepare, "Checking Play")
+            let highest = try await play.overview(package: plan.app.bundleID).tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0
+            log("Highest version code on Play: \(highest)")
+            if plan.build <= highest, !plan.rehearsal {
+                throw ReleaseError.precondition("Version code \(plan.build) is not above Play's highest (\(highest)).")
+            }
+        }
+        if let appGallery, let target = plan.appGallery {
+            detail(.prepare, "Checking AppGallery")
+            let app = try await appGallery.app(appID: target.appID, package: plan.app.bundleID)
+            log("AppGallery: \(app.name), \(app.stateTitle.lowercased())\(app.versionOnShelf.map { ", \($0) on sale" } ?? "")")
+            if app.releaseState == 4 || app.releaseState == 5 {
+                log("A version is in review on AppGallery; submitting again may wait for that review.", .warning)
+            }
+        }
+    }
+
+    private func releaseToAppGallery(_ ctx: inout Context) async throws -> StepState {
+        guard let appGallery, let target = plan.appGallery, let file = ipa else {
+            throw ReleaseError.precondition("No AppGallery account or no app bundle")
+        }
+        let sink = sink
+        detail(.agcRelease, "Uploading")
+        try await appGallery.upload(appID: target.appID, file: file, log: { sink.add(.agcRelease, .info, $0) })
+        if !plan.whatsNew.isEmpty {
+            detail(.agcRelease, "What's new")
+            try await appGallery.setWhatsNew(appID: target.appID, notes: plan.whatsNew)
+            log("What's new written for \(plan.whatsNew.keys.sorted().joined(separator: ", "))")
+        }
+        detail(.agcRelease, "Submitting for review")
+        try await appGallery.submit(appID: target.appID, release: target.release)
+        switch target.release {
+        case .afterReview: log("Submitted \(plan.version) (\(plan.build)) for AppGallery review; it goes live once approved", .success)
+        case .phased(let p, let d): log("Submitted \(plan.version) (\(plan.build)) for review, phased to \(Int(p))% over \(d) days", .success)
+        }
+        return .done
     }
 
     private func checkCancelled() throws {

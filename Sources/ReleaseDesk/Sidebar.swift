@@ -62,6 +62,14 @@ struct Sidebar: View {
                     Label { Text("Google Play") } icon: { PlayMark(size: 14) }
                 }
                 .buttonStyle(.plain)
+                Button { model.connecting = .huawei } label: {
+                    Label { Text("AppGallery") } icon: { AppGalleryMark(size: 13) }
+                }
+                .buttonStyle(.plain)
+                Button { model.connecting = .microsoft } label: {
+                    Label { Text("Microsoft Store") } icon: { WindowsMark(size: 12) }
+                }
+                .buttonStyle(.plain)
             }
         }
         .listStyle(.sidebar)
@@ -105,6 +113,10 @@ struct Sidebar: View {
                     if model.activeRun(for: app.id) != nil {
                         Image(systemName: "paperplane.fill").font(.caption2).foregroundStyle(Palette.cyan)
                             .symbolEffect(.pulse, options: .repeating)
+                    } else if let a = model.apps[app.id]?.agc {
+                        Circle().fill(a.tone.color).frame(width: 6, height: 6)
+                    } else if let m = model.apps[app.id]?.ms, let s = m.pendingStatus ?? m.lastStatus {
+                        Circle().fill(describeMicrosoft(s).tone.color).frame(width: 6, height: 6)
                     } else if app.isPlay {
                         if model.apps[app.id]?.error != nil {
                             Image(systemName: "person.badge.key").font(.caption2).foregroundStyle(StateTone.waiting.color)

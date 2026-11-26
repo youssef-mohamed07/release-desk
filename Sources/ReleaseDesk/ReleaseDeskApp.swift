@@ -24,6 +24,8 @@ struct ReleaseDeskApp: App {
                 Divider()
                 Button("Connect App Store Connect…") { model.connecting = .apple }
                 Button("Connect Google Play…") { model.connecting = .google }
+                Button("Connect AppGallery…") { model.connecting = .huawei }
+                Button("Connect Microsoft Store…") { model.connecting = .microsoft }
             }
             CommandGroup(after: .sidebar) {
                 Toggle("Privacy Mode", isOn: Binding(get: { model.privacy }, set: { model.privacy = $0 }))

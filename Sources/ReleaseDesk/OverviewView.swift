@@ -128,7 +128,33 @@ struct AppCard: View {
                             .help("Shipping \(run.plan.version) (\(run.plan.build))")
                     }
                 }
-                if app.isPlay {
+                if app.store == .huawei {
+                    let a = model.apps[app.id]?.agc
+                    HStack {
+                        Text(a?.version ?? " ").font(.system(.callout, design: .rounded).weight(.semibold).monospacedDigit())
+                        Spacer()
+                        AppGalleryMark(size: 12)
+                    }
+                    HStack {
+                        if let a { StatePillText(text: a.stateTitle, tone: a.tone) }
+                        if let shelf = a?.versionOnShelf { Text("\(shelf) on sale").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                    }
+                    .frame(minHeight: 34, alignment: .top)
+                } else if app.store == .microsoft {
+                    let m = model.apps[app.id]?.ms
+                    HStack {
+                        Text(String(app.id.dropFirst("msstore:".count))).font(.system(.callout, design: .monospaced).weight(.semibold))
+                        Spacer()
+                        WindowsMark(size: 11)
+                    }
+                    HStack {
+                        if let s = m?.pendingStatus ?? m?.lastStatus { StatePillText(text: describeMicrosoft(s).label, tone: describeMicrosoft(s).tone) }
+                        else { Text(m?.firstPublished == nil ? "Not published yet" : "Published").font(.caption).foregroundStyle(.secondary) }
+                        Spacer()
+                    }
+                    .frame(minHeight: 34, alignment: .top)
+                } else if app.isPlay {
                     HStack {
                         Text(model.apps[app.id]?.tracks.flatMap(\.releases).max(by: { $0.maxCode < $1.maxCode })?.name ?? " ")
                             .font(.system(.callout, design: .rounded).weight(.semibold).monospacedDigit())
@@ -268,7 +294,7 @@ struct TeamView: View {
                             .help("Forget this team and delete its key from the Keychain")
                     }
                     if let e = state?.error { Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                    if team.credential.isGoogle { PackagesEditor(team: team) }
+                    if team.credential.takesPackages { PackagesEditor(team: team) }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 270, maximum: 400), spacing: 14)], spacing: 14) {
                         ForEach(state?.apps ?? []) { AppCard(app: $0) }
                     }
@@ -312,6 +338,11 @@ struct WelcomeView: View {
                         model.connecting = .google
                     }
                 }
+                HStack(spacing: 14) {
+                    Button { model.connecting = .huawei } label: { Label { Text("AppGallery") } icon: { AppGalleryMark(size: 14) } }
+                    Button { model.connecting = .microsoft } label: { Label { Text("Microsoft Store") } icon: { WindowsMark(size: 13) } }
+                }
+                .buttonStyle(.glass)
                 Text("Keys go to your Keychain. Nothing leaves this Mac except calls to Apple, Google and GitHub.")
                     .font(.callout).foregroundStyle(.tertiary)
             }

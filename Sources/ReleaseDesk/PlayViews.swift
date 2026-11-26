@@ -277,9 +277,21 @@ struct PlayShipComposer: View {
     @State private var onGitHub = false
     @State private var repo: GitHubRepo?
     @State private var cloudReady = false
+    // Stores: the same package on Google Play and on AppGallery.
+    @State private var toPlay = true
+    @State private var toAGC = false
+    @State private var agcPhased = false
+    @State private var agcPercent = 10.0
+    @State private var agcDays = 7
 
-    private var state: AppState { model.apps[app.id] ?? AppState() }
-    private var highest: Int { state.tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0 }
+    private var playApp: ASCApp? { model.app("play:\(app.bundleID)") }
+    private var agcApp: ASCApp? { model.app("agc:\(app.bundleID)") }
+    private var sendsPlay: Bool { toPlay && playApp != nil }
+    private var sendsAGC: Bool { toAGC && agcApp != nil && model.agcAppIDs["agc:\(app.bundleID)"] != nil }
+    private var storeNames: String { [sendsPlay ? "Google Play" : nil, sendsAGC ? "AppGallery" : nil].compactMap { $0 }.joined(separator: " and ") }
+    /// Play's state (tracks, version codes), whichever store's page this is.
+    private var state: AppState { model.apps[playApp?.id ?? app.id] ?? AppState() }
+    private var highest: Int { sendsPlay ? state.tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0 : 0 }
     private var locales: [String] { (model.workspace.link(for: app.id)?.recipe ?? link.recipe).playLocales ?? ["en-US", "ar"] }
     private var tracks: [(String, String)] {
         var t = [("internal", "Internal"), ("alpha", "Closed"), ("beta", "Open"), ("production", "Production")]
@@ -297,19 +309,23 @@ struct PlayShipComposer: View {
                             HStack(spacing: 8) {
                                 Text("Ship").font(.system(size: 28, weight: .bold, design: .rounded))
                                 Text(app.name).font(.system(size: 28, weight: .bold, design: .rounded)).sensitive(10)
-                                PlayMark(size: 20)
+                                if playApp != nil { PlayMark(size: 20) }
+                                if agcApp != nil { AppGalleryMark(size: 20) }
                             }
                             HStack(spacing: 8) {
                                 Chip(text: (link.path as NSString).abbreviatingWithTildeInPath, symbol: "folder", mono: true, sensitive: true)
                                 if let p = project { Chip(text: "pubspec \(p.version)+\(p.buildNumber)", symbol: "doc.text", mono: true) }
-                                Chip(text: "Android · Google Play", symbol: "apps.iphone")
+                                Chip(text: "Android · \(storeNames.isEmpty ? "no store chosen" : storeNames)", symbol: "apps.iphone")
                             }
                         }
                         Spacer()
                     }
                     if let loadError { Label(loadError, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).card() }
-                    if let e = state.error, let team = model.team(ofApp: app.id) {
-                        AccessCard(message: e, team: team) { Task { await model.refresh(appID: app.id) } }
+                    if sendsPlay, let e = state.error, let play = playApp, let team = model.team(ofApp: play.id) {
+                        AccessCard(message: e, team: team) { Task { await model.refresh(appID: play.id) } }
+                    }
+                    if sendsAGC, let e = model.apps[agcApp?.id ?? ""]?.error {
+                        Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).card()
                     }
                     if let p = project, !p.hasUploadKey, !onGitHub {
                         Label("This project has no android/key.properties, so release builds are signed with the debug key and Play refuses them. A rehearsal still works.",
@@ -319,7 +335,9 @@ struct PlayShipComposer: View {
                         VStack(spacing: 20) {
                             releaseCard
                             CloudBuildCard(app: app, link: link, target: .android, onGitHub: $onGitHub, repo: $repo, ready: $cloudReady)
-                            trackCard
+                            storesCard
+                            if sendsPlay { trackCard }
+                            if sendsAGC { agcCard }
                             optionsCard
                         }
                         .frame(width: 420)
@@ -333,7 +351,7 @@ struct PlayShipComposer: View {
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 4) { Text(app.name).sensitive(); Text("\(version) (\(build))") }.font(.headline.monospacedDigit())
-                    Text(rehearsal ? "Rehearsal · build and check signing" : "Upload → \(tracks.first { $0.0 == track }?.1 ?? track) · \(statusText)")
+                    Text(rehearsal ? "Rehearsal · build and check signing" : destinationText)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -346,7 +364,7 @@ struct PlayShipComposer: View {
                 .tint(rehearsal ? Palette.violet : Color(red: 0.0, green: 0.62, blue: 0.45))
                 .controlSize(.extraLarge)
                 .disabled(!ready || version.isEmpty || model.activeRun(for: app.id) != nil || (!rehearsal && build <= highest)
-                          || (onGitHub && !cloudReady))
+                          || (onGitHub && !cloudReady) || (!sendsPlay && !sendsAGC))
                 .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(.horizontal, 22).padding(.vertical, 14)
@@ -356,13 +374,68 @@ struct PlayShipComposer: View {
         .background(alignment: .top) { AmbientGlow(url: model.iconURL(app.id), intensity: 0.45).frame(height: 460) }
         .task(id: link.path) { await load() }
         .onChange(of: notes) { Drafts.save(notes, for: app.id) }
-        .alert(rehearsal ? "Rehearse \(privacy ? "this app" : app.name) \(version) (\(build))?" : "Release \(privacy ? "this app" : app.name) \(version) (\(build)) on Google Play?", isPresented: $confirming) {
+        .alert(rehearsal ? "Rehearse \(privacy ? "this app" : app.name) \(version) (\(build))?" : "Release \(privacy ? "this app" : app.name) \(version) (\(build)) on \(storeNames)?", isPresented: $confirming) {
             Button(rehearsal ? "Rehearse" : "Release") { launch() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(rehearsal ? "Builds the app bundle and checks its signature. Nothing is uploaded."
-                 : "Builds the app bundle, uploads it and releases it to the \(tracks.first { $0.0 == track }?.1 ?? track) track as \(statusText.lowercased()).")
+            Text(rehearsal ? "Builds the app bundle and checks its signature. Nothing is uploaded." : confirmText)
         }
+    }
+
+    private var destinationText: String {
+        var parts: [String] = []
+        if sendsPlay { parts.append("Play \(tracks.first { $0.0 == track }?.1 ?? track) · \(statusText)") }
+        if sendsAGC { parts.append("AppGallery review" + (agcPhased ? " · phased \(Int(agcPercent))%" : "")) }
+        return parts.isEmpty ? "Choose a store" : "Upload → " + parts.joined(separator: " + ")
+    }
+
+    private var confirmText: String {
+        var s = "Builds the app bundle."
+        if sendsPlay { s += " Releases it to Play's \(tracks.first { $0.0 == track }?.1 ?? track) track as \(statusText.lowercased())." }
+        if sendsAGC {
+            s += agcPhased ? " Uploads it to AppGallery and submits it for review, then releases it to \(Int(agcPercent))% of users over \(agcDays) days."
+                           : " Uploads it to AppGallery and submits it for review; it goes live once approved."
+        }
+        return s
+    }
+
+    /// Which stores get this build, when the package is on more than one.
+    @ViewBuilder
+    private var storesCard: some View {
+        if playApp != nil && agcApp != nil {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Stores", systemImage: "square.stack.3d.up").font(.headline)
+                Toggle(isOn: $toPlay) { Label { Text("Google Play") } icon: { PlayMark(size: 14) } }
+                Toggle(isOn: $toAGC) { Label { Text("Huawei AppGallery") } icon: { AppGalleryMark(size: 14) } }
+                Text("One build goes to each store you pick.").font(.caption).foregroundStyle(.secondary)
+            }
+            .toggleStyle(.switch)
+            .card()
+        }
+    }
+
+    private var agcCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("AppGallery", systemImage: "bag").font(.headline)
+            Picker("Release", selection: $agcPhased) {
+                Text("After review").tag(false)
+                Text("Phased").tag(true)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            if agcPhased {
+                HStack {
+                    Slider(value: $agcPercent, in: 1...99, step: 1)
+                    Text("\(Int(agcPercent))%").font(.callout.monospacedDigit()).frame(width: 44)
+                }
+                Stepper("Over \(agcDays) days", value: $agcDays, in: 1...60)
+                Text("A phased release needs a version released before.").font(.caption).foregroundStyle(.secondary)
+            }
+            if let a = model.apps[agcApp?.id ?? ""]?.agc {
+                Text("Now: \(a.stateTitle)\(a.versionOnShelf.map { " · \($0) on sale" } ?? "")").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("App bundles up to 150 MB; AppGallery's App Signing has to be on for bundles.").font(.caption).foregroundStyle(.secondary)
+        }
+        .card()
     }
 
     private var statusText: String {
@@ -392,7 +465,7 @@ struct PlayShipComposer: View {
                 }
                 Spacer()
             }
-            Text(state.error != nil && state.tracks.isEmpty ? "Play has not shown this app's version codes yet."
+            Text(!sendsPlay ? "Use a version code above the last one on the store." : state.error != nil && state.tracks.isEmpty ? "Play has not shown this app's version codes yet."
                  : (highest > 0 ? "Highest on Play: \(highest)." : "No version code on Play yet.")).font(.caption)
                 .foregroundStyle(build <= highest ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
             Toggle(isOn: $writeBuildNumber) {
@@ -456,7 +529,9 @@ struct PlayShipComposer: View {
             loadError = error.localizedDescription
             return
         }
-        if model.apps[app.id]?.detailed != true { await model.refresh(appID: app.id) }
+        toPlay = playApp != nil
+        toAGC = agcApp != nil && (app.store == .huawei || link.recipe.agcToo == true)
+        for a in [playApp, agcApp].compactMap({ $0 }) where model.apps[a.id]?.detailed != true { await model.refresh(appID: a.id) }
         guard let project else { return }
         version = project.version
         build = max(highest + 1, project.buildNumber)
@@ -474,6 +549,7 @@ struct PlayShipComposer: View {
             r.playTrack = track
             r.playStatus = status
             r.writeBuildNumber = writeBuildNumber
+            if app.store == .google { r.agcToo = sendsAGC }
         }
         var recipe = model.workspace.link(for: app.id)?.recipe ?? link.recipe
         recipe.writeBuildNumber = writeBuildNumber
@@ -481,7 +557,10 @@ struct PlayShipComposer: View {
                                teamID: nil, groups: [], whatsNew: notes.notes(in: locales),
                                submitForReview: false, rehearsal: rehearsal)
         plan.platform = .android
-        plan.play = PlayTarget(track: track, status: status, userFraction: status == "inProgress" ? rollout : nil)
+        plan.play = sendsPlay ? PlayTarget(track: track, status: status, userFraction: status == "inProgress" ? rollout : nil) : nil
+        if sendsAGC, let id = model.agcAppIDs["agc:\(app.bundleID)"] {
+            plan.appGallery = AGCTarget(appID: id, release: agcPhased ? .phased(percent: agcPercent, days: agcDays) : .afterReview)
+        }
         if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo, target: .android) }
         do {
             _ = try model.launch(plan)

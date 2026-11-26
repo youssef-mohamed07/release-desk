@@ -193,16 +193,32 @@ public actor GitHubClient {
     }
 }
 
-/// The two cloud builds Release Desk can run on GitHub Actions.
+/// The cloud builds Release Desk can run on GitHub Actions.
 public enum CloudTarget: String, Sendable, Codable {
-    case ios, android
+    case ios, android, windows
 
-    public var workflowFile: String { self == .ios ? "release-desk-ios.yml" : "release-desk-android.yml" }
+    public var workflowFile: String {
+        switch self {
+        case .ios: "release-desk-ios.yml"
+        case .android: "release-desk-android.yml"
+        case .windows: "release-desk-windows.yml"
+        }
+    }
+
+    /// The runner GitHub starts, in words.
+    public var runner: String {
+        switch self {
+        case .ios: "macOS"
+        case .android: "Linux"
+        case .windows: "Windows"
+        }
+    }
 
     public var secretNames: [String] {
         switch self {
         case .ios: ["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"]
         case .android: ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"]
+        case .windows: ["MS_TENANT_ID", "MS_SELLER_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET"]
         }
     }
 
@@ -213,6 +229,7 @@ public enum CloudTarget: String, Sendable, Codable {
         switch self {
         case .ios: CloudWorkflow.yaml(projectDir: projectDir, recipe: recipe, teamID: teamID, flutterVersion: flutterVersion)
         case .android: CloudWorkflow.androidYAML(projectDir: projectDir, flutterVersion: flutterVersion)
+        case .windows: CloudWorkflow.windowsYAML(projectDir: projectDir, flutterVersion: flutterVersion)
         }
     }
 }
@@ -303,6 +320,86 @@ public enum CloudWorkflow {
               - name: Remove the key
                 if: always()
                 run: rm -f "$RUNNER_TEMP/upload.jks" android/key.properties
+
+        """
+    }
+
+    /// Builds the Flutter Windows app as an MSIX with Microsoft's Store CLI
+    /// and uploads it to a draft submission in Partner Center. Release Desk
+    /// then writes the release notes and commits the submission.
+    public static func windowsYAML(projectDir: String, flutterVersion: String?) -> String {
+        let flutter = flutterVersion.map { "          flutter-version: \($0)" } ?? "          channel: stable"
+        return """
+        # Written by Release Desk. Builds the Windows app as an MSIX on a GitHub runner
+        # and uploads it to a draft Microsoft Store submission; Release Desk then writes
+        # What's new and sends the submission for certification.
+        # Needs msix_config in pubspec.yaml (run `msstore init .` once and commit it), and
+        # the repository secrets MS_TENANT_ID, MS_SELLER_ID, MS_CLIENT_ID and MS_CLIENT_SECRET.
+        name: Release Desk Windows
+        run-name: Release Desk Windows ${{ inputs.version }} (${{ inputs.build }}) ${{ inputs.release_desk_id }}
+
+        on:
+          workflow_dispatch:
+            inputs:
+              version:
+                description: Version (x.y.z); the package gets x.y.z.0
+                required: true
+              build:
+                description: Build number
+                required: true
+              rollout:
+                description: Package rollout percentage, 0 for everyone
+                required: false
+                default: "0"
+              upload:
+                description: Upload to Partner Center (false for a rehearsal)
+                required: false
+                default: "true"
+              release_desk_id:
+                description: Set by Release Desk to find this run
+                required: false
+                default: ""
+
+        jobs:
+          windows:
+            runs-on: windows-latest
+            timeout-minutes: 60
+            defaults:
+              run:
+                working-directory: \(projectDir)
+            steps:
+              - name: Check out
+                uses: actions/checkout@v4
+
+              - name: Set up Flutter
+                uses: subosito/flutter-action@v2
+                with:
+        \(flutter)
+                  cache: true
+
+              - name: Set up the Microsoft Store CLI
+                uses: microsoft/microsoft-store-apppublisher@v1.4
+
+              - name: Sign in to Partner Center
+                env:
+                  TENANT: ${{ secrets.MS_TENANT_ID }}
+                  SELLER: ${{ secrets.MS_SELLER_ID }}
+                  CLIENT: ${{ secrets.MS_CLIENT_ID }}
+                  SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+                run: msstore reconfigure --tenantId "$env:TENANT" --sellerId "$env:SELLER" --clientId "$env:CLIENT" --clientSecret "$env:SECRET"
+
+              - name: Get packages
+                run: flutter pub get
+
+              - name: Build the MSIX
+                run: msstore package . --version "${{ inputs.version }}.0" --output release-desk-msix
+
+              - name: Upload to a draft submission
+                if: inputs.upload != 'false'
+                run: |
+                  $publish = @("publish", ".", "-i", "release-desk-msix", "-v", "--noCommit")
+                  if ([int]"${{ inputs.rollout }}" -gt 0) { $publish += @("--packageRolloutPercentage", "${{ inputs.rollout }}") }
+                  msstore @publish
 
         """
     }

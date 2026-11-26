@@ -70,6 +70,19 @@ public enum JSONValue: Sendable, Hashable, Codable {
         return []
     }
 
+    public var dictionary: [String: JSONValue] {
+        if case .object(let o) = self { return o }
+        return [:]
+    }
+
+    /// A copy with the value at a key path replaced, making objects on the way.
+    public func setting(_ path: [String], to value: JSONValue) -> JSONValue {
+        guard let first = path.first else { return value }
+        var o = dictionary
+        o[first] = (o[first] ?? .null).setting(Array(path.dropFirst()), to: value)
+        return .object(o)
+    }
+
     public var isNull: Bool {
         if case .null = self { return true }
         return false

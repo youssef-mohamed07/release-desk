@@ -126,8 +126,11 @@ public enum ReleaseError: LocalizedError, Sendable {
             return "Keychain: \(msg)"
         case .api(let status, let path, let messages):
             let google = path.contains("googleapis.com") || path.contains("androidpublisher") || path == "oauth token"
+            let store = path.contains("huawei.com") || path.contains("myhuaweicloud") ? "AppGallery"
+                : path.contains("microsoft") || path.contains("windows.net") ? "Microsoft Store"
+                : google ? "Google Play" : "App Store Connect"
             let shown = URL(string: path).flatMap { $0.host != nil ? $0.path : nil } ?? path
-            return "\(google ? "Google Play" : "App Store Connect") \(status) on \(shown): \(messages.joined(separator: "; "))"
+            return "\(store) \(status) on \(shown): \(messages.joined(separator: "; "))"
         case .network(let m): return m
         case .command(let c, let code, let tail):
             return "\(c) failed (exit \(code))" + (tail.isEmpty ? "" : "\n\(tail)")

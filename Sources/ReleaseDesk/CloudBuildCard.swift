@@ -27,16 +27,34 @@ struct CloudBuildCard: View {
     private var secretsOK: Bool { ghSecrets.map { s in target.secretNames.allSatisfy(s.contains) } ?? false }
     private var missingSecrets: [String] { ghSecrets.map { s in target.secretNames.filter { !s.contains($0) } } ?? [] }
 
+    private var secretsButton: String {
+        switch target {
+        case .ios: "Set from this team's key"
+        case .android: "Set from the upload key"
+        case .windows: "Set from Partner Center"
+        }
+    }
+
+    private var explanation: String {
+        switch target {
+        case .ios: "A GitHub macOS runner archives, signs and uploads; this Mac does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones."
+        case .android: "A GitHub Linux runner builds and signs the app bundle; Release Desk downloads it and releases it. No store credential goes to GitHub."
+        case .windows: "A Mac can't build Windows apps, so a GitHub Windows runner builds the MSIX with Microsoft's Store CLI and uploads it to a draft submission; Release Desk then writes What's new and sends it for certification."
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Build on", systemImage: "hammer").font(.headline)
+                Label(target == .windows ? "Build on GitHub" : "Build on", systemImage: target == .windows ? "cloud" : "hammer").font(.headline)
                 Spacer()
-                Picker("Build on", selection: $onGitHub.animation(.snappy)) {
-                    Text("This Mac").tag(false)
-                    Text("GitHub Actions").tag(true)
+                if target != .windows {
+                    Picker("Build on", selection: $onGitHub.animation(.snappy)) {
+                        Text("This Mac").tag(false)
+                        Text("GitHub Actions").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
             if onGitHub {
                 if ghBusy && repo == nil {
@@ -63,14 +81,12 @@ struct CloudBuildCard: View {
                     checkRow(ok: secretsOK, title: "Secrets " + target.secretNames.joined(separator: ", "),
                              hint: missingSecrets.isEmpty ? nil : "Missing: \(missingSecrets.joined(separator: ", "))") {
                         if ghSecrets != nil && !secretsOK {
-                            Button(target == .ios ? "Set from this team's key" : "Set from the upload key") { confirmSecrets = true }
+                            Button(secretsButton) { confirmSecrets = true }
                                 .buttonStyle(.glass).controlSize(.small)
                         }
                     }
                     HStack {
-                        Text(target == .ios
-                             ? "A GitHub macOS runner archives, signs and uploads; this Mac does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones."
-                             : "A GitHub Linux runner builds and signs the app bundle; Release Desk downloads it and releases it on Play. No Google credential goes to GitHub.")
+                        Text(explanation)
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button { Task { await check() } } label: { Image(systemName: "arrow.clockwise") }
@@ -90,7 +106,11 @@ struct CloudBuildCard: View {
         .task { if onGitHub && repo == nil { await check() } }
         .onChange(of: onGitHub) {
             model.updateRecipe(appID: app.id) { r in
-                if target == .ios { r.buildOn = onGitHub ? "github" : nil } else { r.androidBuildOn = onGitHub ? "github" : nil }
+                switch target {
+                case .ios: r.buildOn = onGitHub ? "github" : nil
+                case .android: r.androidBuildOn = onGitHub ? "github" : nil
+                case .windows: break
+                }
             }
             if onGitHub && repo == nil { Task { await check() } }
         }
@@ -100,9 +120,11 @@ struct CloudBuildCard: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             let where_ = privacy ? "the repository" : repo?.fullName ?? "the repository"
-            Text(target == .ios
-                 ? "Release Desk puts this team's App Store Connect key into \(where_)'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key."
-                 : "Release Desk puts the upload keystore and its passwords from android/key.properties into \(where_)'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then sign with it.")
+            switch target {
+            case .ios: Text("Release Desk puts this team's App Store Connect key into \(where_)'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key.")
+            case .android: Text("Release Desk puts the upload keystore and its passwords from android/key.properties into \(where_)'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then sign with it.")
+            case .windows: Text("Release Desk puts this Partner Center client (tenant ID, seller ID, client ID and secret) into \(where_)'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then publish to the Store.")
+            }
         }
     }
 

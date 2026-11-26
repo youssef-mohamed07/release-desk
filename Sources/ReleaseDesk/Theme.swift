@@ -195,7 +195,33 @@ struct ProviderMark: View {
         switch provider {
         case .apple: Image(systemName: "apple.logo").font(.system(size: size * 0.9, weight: .medium)).frame(width: size, height: size)
         case .google: PlayMark(size: size)
+        case .huawei: AppGalleryMark(size: size)
+        case .microsoft: WindowsMark(size: size)
         }
+    }
+}
+
+/// AppGallery: a red rounded square with a bag outline, drawn from shapes.
+struct AppGalleryMark: View {
+    var size: CGFloat = 14
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.26)
+            .fill(Color(red: 0.8, green: 0.1, blue: 0.16))
+            .overlay(Image(systemName: "bag.fill").font(.system(size: size * 0.52, weight: .bold)).foregroundStyle(.white))
+            .frame(width: size, height: size)
+    }
+}
+
+/// Microsoft Store: four squares, drawn from shapes.
+struct WindowsMark: View {
+    var size: CGFloat = 14
+    var body: some View {
+        let gap = size * 0.08, s = (size - gap) / 2
+        VStack(spacing: gap) {
+            HStack(spacing: gap) { Rectangle().fill(Color(red: 0.95, green: 0.31, blue: 0.13)); Rectangle().fill(Color(red: 0.5, green: 0.73, blue: 0.0)) }
+            HStack(spacing: gap) { Rectangle().fill(Color(red: 0.0, green: 0.64, blue: 0.94)); Rectangle().fill(Color(red: 1.0, green: 0.73, blue: 0.0)) }
+        }
+        .frame(width: s * 2 + gap, height: s * 2 + gap)
     }
 }
 

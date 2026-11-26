@@ -22,7 +22,7 @@ struct CommandPalette: View {
         var all: [Item] = []
         for (account, team) in model.allTeams {
             for app in model.teams[team.id]?.apps ?? [] {
-                let store = account.provider == .apple ? "App Store" : "Google Play"
+                let store = account.provider == .apple ? "App Store" : account.provider.title
                 all.append(Item(id: "ship-\(app.id)", title: "Ship \(app.name)", subtitle: "\(store) · \(team.name)", symbol: nil,
                                 appID: app.id, provider: account.provider) { $0.route = .ship(app.id) })
                 all.append(Item(id: "open-\(app.id)", title: app.name, subtitle: "\(app.bundleID) · \(store) · \(team.name)", symbol: nil,
@@ -37,6 +37,8 @@ struct CommandPalette: View {
             Item(id: "new-app", title: "New app", subtitle: "Bundle id, store records, groups and upload key", symbol: "sparkles", appID: nil, provider: nil) { $0.newApp = true },
             Item(id: "connect-apple", title: "Connect App Store Connect", subtitle: "Add a team with its API key", symbol: "apple.logo", appID: nil, provider: nil) { $0.connecting = .apple },
             Item(id: "connect-google", title: "Connect Google Play", subtitle: "Sign in with Google, or use a service account", symbol: "play.fill", appID: nil, provider: nil) { $0.connecting = .google },
+            Item(id: "connect-huawei", title: "Connect AppGallery", subtitle: "Add a Huawei team with its API client", symbol: "bag.fill", appID: nil, provider: nil) { $0.connecting = .huawei },
+            Item(id: "connect-microsoft", title: "Connect Microsoft Store", subtitle: "Add a Partner Center account", symbol: "storefront", appID: nil, provider: nil) { $0.connecting = .microsoft },
             Item(id: "refresh", title: "Refresh everything", subtitle: "Ask both stores again", symbol: "arrow.clockwise", appID: nil, provider: nil) { m in Task { await m.refreshAll() } },
         ]
         let words = query.lowercased().split(separator: " ").map(String.init)

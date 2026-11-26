@@ -1,9 +1,31 @@
 import Foundation
 
-public enum StoreProvider: String, Codable, Sendable, Hashable {
-    case apple, google
+public enum StoreProvider: String, Codable, Sendable, Hashable, CaseIterable {
+    case apple, google, huawei, microsoft
 
-    public var title: String { self == .apple ? "Apple" : "Google Play" }
+    public var title: String {
+        switch self {
+        case .apple: "Apple"
+        case .google: "Google Play"
+        case .huawei: "AppGallery"
+        case .microsoft: "Microsoft Store"
+        }
+    }
+
+    /// The prefix of app ids from this store ("" for App Store Connect, whose ids are Apple's).
+    public var appPrefix: String {
+        switch self {
+        case .apple: ""
+        case .google: "play:"
+        case .huawei: "agc:"
+        case .microsoft: "msstore:"
+        }
+    }
+
+    /// The store an app id belongs to.
+    public static func of(appID: String) -> StoreProvider {
+        allCases.first { !$0.appPrefix.isEmpty && appID.hasPrefix($0.appPrefix) } ?? .apple
+    }
 }
 
 /// A person's sign-in with a store (an Apple ID, a Google account). It holds
@@ -45,12 +67,18 @@ public enum Credential: Codable, Hashable, Sendable {
     case playServiceAccount(email: String)
     /// Signed in with a person's own Google account.
     case googleUser(email: String)
+    /// AppGallery Connect API client (Connect API, team level); the key is the secret.
+    case agcClient(clientID: String)
+    /// A Microsoft Entra app added to Partner Center as Manager; the client secret is the secret.
+    case partnerCenter(tenantID: String, clientID: String, sellerID: String)
 
     public var secretAccount: String {
         switch self {
         case .appStoreConnectKey(let keyID, _): "asc:\(keyID)"
         case .playServiceAccount(let email): "play:\(email)"
         case .googleUser(let email): "google:\(email)"
+        case .agcClient(let id): "agc:\(id)"
+        case .partnerCenter(_, let clientID, _): "ms:\(clientID)"
         }
     }
 
@@ -59,15 +87,24 @@ public enum Credential: Codable, Hashable, Sendable {
         case .appStoreConnectKey(let keyID, _): "API key \(keyID)"
         case .playServiceAccount(let email): email
         case .googleUser(let email): "Signed in as \(email)"
+        case .agcClient(let id): "API client \(id)"
+        case .partnerCenter(_, _, let seller): "Seller \(seller)"
         }
     }
 
-    public var isGoogle: Bool {
+    public var store: StoreProvider {
         switch self {
-        case .appStoreConnectKey: false
-        default: true
+        case .appStoreConnectKey: .apple
+        case .playServiceAccount, .googleUser: .google
+        case .agcClient: .huawei
+        case .partnerCenter: .microsoft
         }
     }
+
+    public var isGoogle: Bool { store == .google }
+
+    /// Stores where apps are added by package name when the API can't list them.
+    public var takesPackages: Bool { store == .google || store == .huawei }
 }
 
 public enum ProjectKind: String, Codable, Sendable { case flutter }
@@ -105,6 +142,12 @@ public struct IOSRecipe: Codable, Hashable, Sendable {
     public var appStoreLocales: [String]?
     /// Languages of a Google Play release's What's new; nil means English and Arabic.
     public var playLocales: [String]?
+    /// A Google Play app whose builds also go to AppGallery.
+    public var agcToo: Bool?
+    /// Languages of a Microsoft Store release's What's new (listing keys like en-us).
+    public var msLocales: [String]?
+    /// Microsoft Store package rollout percentage used last time (0 = everyone).
+    public var msRollout: Int?
     /// iOS: "github" to build on GitHub Actions instead of this Mac.
     public var buildOn: String?
     /// Android: "github" to build the app bundle on GitHub Actions.

@@ -25,12 +25,12 @@ guard let command = args.first else {
            rdesk bundle --key-id ID --issuer ISSUER --bundle BUNDLE_ID [--key-file PATH]
            rdesk play-apps --json SERVICE_ACCOUNT.json
            rdesk play-tracks --json SERVICE_ACCOUNT.json --package PACKAGE
-           rdesk workflow [--android] [--dir mobile] [--team TEAMID] [--flutter 3.x]
+           rdesk workflow [--android | --windows] [--dir mobile] [--team TEAMID] [--flutter 3.x]
     """)
 }
 // The GitHub Actions workflow for cloud builds: rdesk workflow [--dir mobile] [--team TEAMID] [--flutter 3.x]
 if command == "workflow" {
-    let target: CloudTarget = args.contains("--android") ? .android : .ios
+    let target: CloudTarget = args.contains("--android") ? .android : args.contains("--windows") ? .windows : .ios
     print(target.yaml(projectDir: option("--dir") ?? ".", recipe: IOSRecipe(), teamID: option("--team"), flutterVersion: option("--flutter")))
     exit(0)
 }

@@ -49,6 +49,17 @@ struct ConnectSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if provider == .huawei || provider == .microsoft {
+                StoreConnectForm(provider: provider).id(provider)
+            } else {
+                appleAndGoogle
+            }
+        }
+        .frame(width: 660, height: 760)
+    }
+
+    private var appleAndGoogle: some View {
+        VStack(spacing: 0) {
             Form {
                 if isApple {
                     keySection
@@ -68,7 +79,6 @@ struct ConnectSheet: View {
             .scrollContentBackground(.hidden)
             footer
         }
-        .frame(width: 660, height: 760)
         .fileImporter(isPresented: $importing, allowedContentTypes: isApple ? [UTType(filenameExtension: "p8") ?? .data, .data] : [.json]) { result in
             if case .success(let url) = result { load(url) }
         }
@@ -95,8 +105,7 @@ struct ConnectSheet: View {
                 ProviderMark(provider: provider, size: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Connect a team").font(.title2.bold())
-                    Text(isApple ? "One App Store Connect API key per team: Users and Access → Integrations → App Store Connect API."
-                                 : "Sign in with the Google account that has Play Console access. Release Desk sees the apps it sees.")
+                    Text(subtitle)
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -104,11 +113,22 @@ struct ConnectSheet: View {
             Picker("Store", selection: $provider) {
                 Text("App Store Connect").tag(StoreProvider.apple)
                 Text("Google Play").tag(StoreProvider.google)
+                Text("AppGallery").tag(StoreProvider.huawei)
+                Text("Microsoft Store").tag(StoreProvider.microsoft)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
         }
         .padding(24)
+    }
+
+    private var subtitle: String {
+        switch provider {
+        case .apple: "One App Store Connect API key per team: Users and Access → Integrations → App Store Connect API."
+        case .google: "Sign in with the Google account that has Play Console access. Release Desk sees the apps it sees."
+        case .huawei: "Huawei AppGallery, with an API client from AppGallery Connect."
+        case .microsoft: "The Microsoft Store, with a Microsoft Entra app added to Partner Center."
+        }
     }
 
     private var userMode: Bool { !isApple && !useServiceAccount }

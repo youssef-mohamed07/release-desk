@@ -11,7 +11,11 @@ struct AppDetailView: View {
     @State private var actionError: String?
 
     var body: some View {
-        if let app = model.app(appID), app.isPlay {
+        if let app = model.app(appID), app.store == .huawei {
+            AGCAppDetailView(app: app)
+        } else if let app = model.app(appID), app.store == .microsoft {
+            MSAppDetailView(app: app)
+        } else if let app = model.app(appID), app.isPlay {
             PlayAppDetailView(app: app)
         } else if let app = model.app(appID) {
             let state = model.apps[appID] ?? AppState()
