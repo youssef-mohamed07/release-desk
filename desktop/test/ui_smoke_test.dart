@@ -11,12 +11,17 @@ import 'package:release_desk/src/core/asc.dart';
 import 'package:release_desk/src/core/flutter_project.dart';
 import 'package:release_desk/src/core/github.dart';
 import 'package:release_desk/src/core/play.dart';
+import 'package:release_desk/src/ui/theme.dart' show debugFontFamilyFallback, debugHomeOverride;
+import 'package:release_desk/src/ui/overview.dart' show debugUserNameOverride;
 import 'package:release_desk/src/core/release_run.dart';
 import 'package:release_desk/src/core/workspace.dart';
 import 'package:release_desk/src/ui/app_model.dart';
 import 'package:release_desk/src/ui/command_palette.dart';
 import 'package:release_desk/src/ui/connect.dart';
 import 'package:release_desk/src/ui/root.dart';
+
+/// RD_PROMO: screens for the promo video, with a stand-in person and a ready release.
+final promo = Platform.environment['RD_PROMO'] != null;
 
 /// A model that never calls a store, GitHub or git.
 class FakeModel extends AppModel {
@@ -36,7 +41,7 @@ class FakeModel extends AppModel {
     repo: const GitHubRepo(owner: 'example-org', name: 'atlas-notes', projectDir: 'mobile'),
     user: 'octocat',
     workflow: target == CloudTarget.ios,
-    secrets: target == CloudTarget.ios ? {'ASC_KEY_ID', 'ASC_ISSUER_ID'} : <String>{},
+    secrets: target == CloudTarget.ios ? {'ASC_KEY_ID', 'ASC_ISSUER_ID', if (promo) 'ASC_PRIVATE_KEY'} : <String>{},
   );
 
   @override
@@ -56,6 +61,14 @@ Future<void> _loadFonts() async {
   await roboto.load();
   final icons = FontLoader('MaterialIcons')..addFont(Future.value(ByteData.sublistView(File(p.join(cache, 'MaterialIcons-Regular.otf')).readAsBytesSync())));
   await icons.load();
+  // Roboto has no ⌘, → or Arabic; on a Mac, borrow them from system fonts.
+  final fallback = <String>[];
+  for (final (family, file) in [('RDSymbols', '/System/Library/Fonts/Apple Symbols.ttf'), ('RDArabic', '/System/Library/Fonts/SFArabic.ttf')]) {
+    if (!File(file).existsSync()) continue;
+    await (FontLoader(family)..addFont(Future.value(ByteData.sublistView(File(file).readAsBytesSync())))).load();
+    fallback.add(family);
+  }
+  if (fallback.isNotEmpty) debugFontFamilyFallback = fallback;
   for (final mono in ['/System/Library/Fonts/SFNSMono.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf']) {
     if (File(mono).existsSync()) {
       for (final family in ['Menlo', 'Consolas', 'DejaVu Sans Mono']) {
@@ -82,7 +95,7 @@ AscBuild _build(String n, String state, {String? internal, String? external, Str
 );
 
 Future<FakeModel> _seed(Directory dir) async {
-  final project = Directory(p.join(dir.path, 'atlas', 'mobile'))..createSync(recursive: true);
+  final project = Directory(p.join(dir.path, 'Developer', 'atlas', 'mobile'))..createSync(recursive: true);
   File(p.join(project.path, 'pubspec.yaml')).writeAsStringSync('name: atlas_notes\nversion: 2.4.0+57\n');
   Directory(p.join(project.path, 'android', 'app')).createSync(recursive: true);
   File(p.join(project.path, 'android', 'app', 'build.gradle.kts')).writeAsStringSync('applicationId = "com.example.atlas"\n');
@@ -261,10 +274,16 @@ void main() {
   }
 
   Future<(FakeModel, Directory)> setUp(WidgetTester tester, {bool empty = false, ThemeMode theme = ThemeMode.dark}) async {
-    tester.view.physicalSize = const Size(1380 * 1.5, 880 * 1.5);
-    tester.view.devicePixelRatio = 1.5;
+    // RD_SCALE renders sharper shots (2 for videos); RD_PROMO uses a stand-in person and home.
+    final scale = double.tryParse(Platform.environment['RD_SCALE'] ?? '') ?? 1.5;
+    tester.view.physicalSize = Size(1380 * scale, 880 * scale);
+    tester.view.devicePixelRatio = scale;
     addTearDown(tester.view.reset);
     final dir = Directory.systemTemp.createTempSync('rd-ui');
+    if (promo) {
+      debugHomeOverride = dir.path;
+      debugUserNameOverride = 'Nour';
+    }
     addTearDown(() => dir.deleteSync(recursive: true));
     final m = empty ? FakeModel(store: WorkspaceStore(Directory(p.join(dir.path, 'support'))), secrets: MemorySecretStore()) : await _seed(dir);
     m.themeMode = theme;
@@ -289,6 +308,13 @@ void main() {
       m.go(AppRoute.team(m.workspace.accounts.first.teams.first.id));
       await shoot(tester, '$tag-04-team');
       m.go(const AppRoute.ship('1001'));
+      if (promo) {
+        await tester.pump(const Duration(milliseconds: 600));
+        final notes = find.byWidgetPredicate((w) => w is TextField && w.minLines == 6);
+        await tester.enterText(notes.at(0), '• بحث أسرع في قائمة الملاحظات\n• إصلاح المشاركة على iPad\n• واجهة الإعدادات بالعربية');
+        await tester.enterText(notes.at(1), '• Faster search on the notes list\n• Fix the share sheet on iPad\n• Arabic layout for settings');
+        FocusManager.instance.primaryFocus?.unfocus();
+      }
       await shoot(tester, '$tag-05-ship-ios');
       m.go(const AppRoute.ship('play:com.example.atlas'));
       await shoot(tester, '$tag-06-ship-play');

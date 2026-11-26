@@ -82,7 +82,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
 
   void _scan() {
     final model = ModelScope.read(context);
-    final home = Shell.home;
+    final home = debugHomeOverride ?? Shell.home;
     final accounts = _accounts(model);
     accountChoice = accounts.isEmpty ? null : accounts.first.id;
     if (isApple) {
@@ -504,7 +504,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
               value: accountChoice,
               isDense: true,
               underline: const SizedBox(),
-              style: TextStyle(fontSize: 13.5, color: t.text),
+              style: Theme.of(context).textTheme.bodyMedium!.copyWith(fontSize: 13.5, color: t.text),
               borderRadius: BorderRadius.circular(10),
               items: [
                 for (final a in accounts)

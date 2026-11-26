@@ -13,6 +13,9 @@ import 'play_pages.dart';
 import 'sidebar.dart';
 import 'theme.dart';
 
+/// Set by demos and screenshot tests to greet a stand-in person.
+String? debugUserNameOverride;
+
 /// A scrolling page over a soft glow, with an optional toolbar on top.
 class PageFrame extends StatelessWidget {
   const PageFrame({super.key, required this.children, this.glowUrl, this.glowIntensity = 0.55, this.glowHeight = 460, this.toolbar, this.padding});
@@ -114,7 +117,7 @@ class _OverviewPageState extends State<OverviewPage> {
         .length;
     final h = DateTime.now().hour;
     final part = h < 12 ? 'Good morning' : (h < 18 ? 'Good afternoon' : 'Good evening');
-    final raw = Platform.environment['USER'] ?? Platform.environment['USERNAME'] ?? '';
+    final raw = debugUserNameOverride ?? Platform.environment['USER'] ?? Platform.environment['USERNAME'] ?? '';
     final first = raw.split(RegExp(r'[ ._-]')).first;
     final name = first.isEmpty ? '' : first[0].toUpperCase() + first.substring(1);
     return Column(

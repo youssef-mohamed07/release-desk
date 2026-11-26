@@ -127,7 +127,13 @@ const tabular = [FontFeature.tabularFigures()];
 ThemeData buildTheme(Brightness b) {
   final t = b == Brightness.dark ? Tokens.darkTokens : Tokens.lightTokens;
   final scheme = ColorScheme.fromSeed(seedColor: Palette.indigo, brightness: b).copyWith(primary: Palette.indigo, surface: t.bg, onSurface: t.text);
-  final base = ThemeData(useMaterial3: true, brightness: b, colorScheme: scheme, visualDensity: VisualDensity.compact);
+  final base = ThemeData(
+    useMaterial3: true,
+    brightness: b,
+    colorScheme: scheme,
+    visualDensity: VisualDensity.compact,
+    fontFamilyFallback: debugFontFamilyFallback,
+  );
   return base.copyWith(
     scaffoldBackgroundColor: t.bg,
     canvasColor: t.bg,
@@ -1114,8 +1120,14 @@ String clock(Duration t) {
 
 String hhmmss(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
 
+/// Set by demos and screenshot tests to show paths under a stand-in home.
+String? debugHomeOverride;
+
+/// Set by screenshot tests, whose fonts lack symbols such as ⌘ and →.
+List<String>? debugFontFamilyFallback;
+
 String tildePath(String path) {
-  final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  final home = debugHomeOverride ?? Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
   if (home != null && home.isNotEmpty && path.startsWith(home)) return '~${path.substring(home.length)}';
   return path;
 }
