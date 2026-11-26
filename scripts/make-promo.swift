@@ -2,14 +2,17 @@
 // screens in 3D, cut to the 120 BPM soundtrack from make-music.swift (one bar
 // is exactly two seconds). Renders 1920×1080 at 30 fps, no audio; mux after.
 //
-// Usage: swiftc -O scripts/make-promo.swift -o /tmp/make-promo && /tmp/make-promo SHOTS_DIR ICON.png out.mp4
+// Usage: swiftc -O scripts/make-promo.swift -o /tmp/make-promo && /tmp/make-promo [--tiktok] SHOTS_DIR ICON.png out.mp4
 import AppKit
 import AVFoundation
 import CoreImage
 
-let W = 1920.0, H = 1080.0, FPS = 30
-let duration = 64.0
-let args = CommandLine.arguments
+// --tiktok renders the vertical cut: 1080×1920, 48 s, the music from its build (8 s) to
+// the middle of the second drop (48 s), then the outro (56–64 s); see the ffmpeg line in README.
+let vertical = CommandLine.arguments.contains("--tiktok")
+let args = CommandLine.arguments.filter { $0 != "--tiktok" }
+let W = vertical ? 1080.0 : 1920.0, H = vertical ? 1920.0 : 1080.0, FPS = 30
+let duration = vertical ? 48.0 : 64.0
 let shotsDir = URL(fileURLWithPath: args[1])
 let iconURL = URL(fileURLWithPath: args[2])
 let outURL = URL(fileURLWithPath: args[3])
@@ -461,13 +464,14 @@ func logoTile(_ l: Logo, cx: Double, cy: Double, size: Double, t: Double, at sta
 }
 
 /// A row of logo tiles centred on cx (or ending at `right` for right-aligned rows).
-func logoRow(_ ls: [Logo], cx: Double? = nil, right: Double? = nil, cy: Double, size: Double, gap: Double = 28, t: Double, at start: Double, step: Double = 0.18) {
+func logoRow(_ ls: [Logo], cx: Double? = nil, right: Double? = nil, cy: Double, size: Double, gap: Double = 28, t: Double, at start: Double, step: Double = 0.18,
+             out: Double? = nil) {
     let total = Double(ls.count) * size + Double(ls.count - 1) * gap
     let x0 = right.map { $0 - total } ?? ((cx ?? W / 2) - total / 2)
     for (i, l) in ls.enumerated() {
         // Right-to-left reading: the first logo sits on the right.
         let x = x0 + Double(ls.count - 1 - i) * (size + gap) + size / 2
-        logoTile(l, cx: x, cy: cy, size: size, t: t, at: start + Double(i) * step)
+        logoTile(l, cx: x, cy: cy, size: size, t: t, at: start + Double(i) * step, out: out)
     }
 }
 
@@ -803,6 +807,293 @@ scenes.append(Scene(start: 56, end: 64) { t, _ in
     logoRow([.apple, .windows, .linux], cx: W / 2, cy: 860, size: 84, gap: 30, t: t, at: 2.2, step: 0.2)
 })
 
+
+// MARK: - TikTok (vertical)
+// Safe area: TikTok draws its buttons on the right (x > 940, y 900–1600) and the caption
+// at the bottom (y > 1480), so everything that matters sits in x 60–960, y 180–1460.
+
+/// Screen card on top, words under it, centred.
+func vfeature(_ t: Double, kick: String, title: String, body: String, screenName: String, color: (Double, Double, Double),
+              focus: (Double, Double) = (0.5, 0.5), zoomTo: Double = 1.0, zoomAt: Double = 0.8,
+              callout region: (Double, Double, Double, Double)? = nil, calloutLabel: String? = nil, logos: [Logo] = [], kickLogo: Logo? = nil,
+              extra: ((Double, Projector) -> Void)? = nil) {
+    let enter = easeOut(prog(t, 0, 0.8))
+    let zoom = lerp(1, zoomTo, easeInOut(prog(t, zoomAt, 1.2)))
+    let proj = screen(screenName, cx: 510, cy: lerp(660, 600, enter), width: 1000 * lerp(0.88, 1, enter), rotY: lerp(-20, -3, enter),
+                      rotX: lerp(16, 3, enter), alpha: clamp(t / 0.25), zoom: zoom, focus: focus, glow: color)
+    if let region { callout(proj, region: region, t: t, at: zoomAt + 1.25, color: color, label: calloutLabel) }
+    if let kickLogo { logoTile(kickLogo, cx: 510, cy: 1000, size: 84, t: t, at: 0.2, glow: color) }
+    else {
+        let p = easeOut(prog(t, 0.2, 0.4))
+        text(kick, x: 100, y: 965, width: 820, size: 34, weight: .heavy, color: ns(color).blended(withFraction: 0.45, of: .white)!, alpha: p, align: .center)
+    }
+    reveal(title, x: 100, y: 1050, width: 820, size: 74, t: t, at: 0.3)
+    reveal(body, x: 100, y: 1255, width: 820, size: 38, weight: .medium, color: NSColor(white: 0.86, alpha: 1), t: t, at: 0.7)
+    logoRow(logos, cx: 510, cy: 1410, size: 100, gap: 26, t: t, at: 1.0)
+    extra?(t, proj)
+}
+
+/// A caption on a dark pill, for words over busy pictures.
+func caption(_ s: String, cx: Double, cy: Double, size: Double, t: Double, at start: Double, out: Double? = nil, color: NSColor = .white) {
+    var p = spring(prog(t, start, 0.5))
+    if let out { p *= 1 - easeIn(prog(t, out, 0.3)) }
+    guard p > 0.001 else { return }
+    let w = textWidth(s, size: size, weight: .heavy) + size * 1.4, h = size * 1.9
+    ctx.saveGState()
+    ctx.translateBy(x: cx, y: cy); ctx.scaleBy(x: p, y: p)
+    ctx.setShadow(offset: CGSize(width: 0, height: 12), blur: 30, color: rgb(0, 0, 0, 0.6))
+    pill(CGRect(x: -w / 2, y: -h / 2, width: w, height: h), fill: rgb(0.07, 0.07, 0.13, 0.94), stroke: rgb(1, 1, 1, 0.18))
+    ctx.setShadow(offset: .zero, blur: 0, color: nil)
+    text(s, x: -w / 2, y: -size * 0.72, width: w, size: size, weight: .heavy, color: color, align: .center)
+    ctx.restoreGState()
+}
+
+var tiktok: [Scene] = []
+
+let messV: [(Bit, Double, Double, Double)] = [
+    (.logo(.app(xcodeApp), 190), 250, 340, -8), (.word("سكريبتات", 80), 760, 300, 5), (.logo(.app(terminalApp), 170), 830, 560, 7),
+    (.word("Keystore", 60), 440, 540, -6), (.logo(.apple, 150), 220, 760, -5), (.word("مفاتيح", 80), 650, 780, 4),
+    (.logo(.testflight, 140), 860, 1000, 6), (.word("توقيع", 80), 290, 1010, -5), (.logo(.play, 150), 590, 1150, 5),
+    (.word("رفع يدوي", 72), 270, 1270, -4), (.logo(.app(studioApp), 180), 820, 1310, -6), (.word("ExportOptions.plist", 50), 520, 1450, 3),
+    (.logo(.app(keychainApp), 160), 230, 1580, -4), (.word("استنى…", 76), 720, 1610, -2), (.word("Provisioning Profile", 48), 520, 190, 4),
+]
+
+// 0–8: the hook, the mess, the turn
+tiktok.append(Scene(start: 0, end: 8) { t, g in
+    // On screen from the very first frame, so the cover and the first second say it.
+    reveal("رافع أبلكيشن\nعلى الستورين؟", x: 80, y: 520, width: 860, size: 108, weight: .black, t: t, at: -1, out: 1.85)
+    logoRow([.apple, .play], cx: 510, cy: 930, size: 180, gap: 56, t: t, at: 0.25, step: 0.25, out: 1.85)
+    let collapse = easeIn(prog(t, 5.4, 0.6))
+    for (i, m) in messV.enumerated() {
+        let p = spring(prog(t, 2.0 + Double(i) * 0.22, 0.45))
+        guard p > 0, collapse < 1 else { continue }
+        let shake = sin(g * 23 + Double(i)) * 2.5 * (1 - collapse)
+        ctx.saveGState()
+        ctx.translateBy(x: lerp(m.1, 510, collapse) + shake, y: lerp(m.2, 900, collapse))
+        ctx.rotate(by: (m.3 + collapse * 40) * .pi / 180)
+        let k = p * (1 - collapse * 0.9)
+        ctx.scaleBy(x: k, y: k)
+        ctx.setAlpha(1 - collapse)
+        switch m.0 {
+        case .word(let w, let size):
+            let width = textWidth(w, size: size, weight: .heavy) + 40
+            text(w, x: -width / 2, y: -size * 0.7, width: width, size: size, weight: .heavy,
+                 color: NSColor(white: 0.72 + 0.28 * Double(i % 3) / 2, alpha: 1), alpha: 0.92 - 0.25 * Double(i % 2), align: .center)
+        case .logo(let l, let size):
+            logoTile(l, cx: 0, cy: 0, size: size, t: 5, at: 0)
+        }
+        ctx.restoreGState()
+    }
+    caption("كل مرة نفس الدوشة…", cx: 510, cy: 900, size: 62, t: t, at: 2.6, out: 5.3)
+    // The turn: the app arrives.
+    let ip = spring(prog(t, 5.9, 0.8))
+    let rp = prog(t, 6.0, 1.0)
+    if rp > 0 && rp < 1 {
+        ctx.setStrokeColor(rgb(0.6, 0.5, 1, (1 - rp) * 0.8)); ctx.setLineWidth(6 * (1 - rp))
+        let rr = 140 + rp * 520
+        ctx.strokeEllipse(in: CGRect(x: 510 - rr, y: 690 - rr, width: rr * 2, height: rr * 2))
+    }
+    if ip > 0.01 {
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 20), blur: 80, color: rgb(0.45, 0.35, 1, 0.8))
+        drawCG(icon, CGRect(x: 510 - 125 * ip, y: 690 - 125 * ip, width: 250 * ip, height: 250 * ip))
+        ctx.restoreGState()
+    }
+    reveal("Release Desk", x: 60, y: 870, width: 900, size: 104, t: t, at: 6.2, dur: 0.5)
+    reveal("خلّصها من شاشة واحدة", x: 60, y: 1030, width: 900, size: 64, weight: .heavy, color: ns(cyan), t: t, at: 6.6, dur: 0.5)
+})
+
+// 8–24: four features on the drop, one bar pair each
+tiktok.append(Scene(start: 8, end: 12) { t, _ in
+    vfeature(t, kick: "الأكونتات", title: "كل أكونتاتك وتيماتك\nقدام عينك", body: "وكل تيم لوحده، من غير لخبطة.",
+             screenName: "dark-01-overview", color: indigo, focus: (0.0, 0.2), zoomTo: 1.6, zoomAt: 0.6,
+             callout: (0.005, 0.17, 0.165, 0.36), calloutLabel: "تيماتك هنا", logos: [.apple, .play])
+})
+tiktok.append(Scene(start: 12, end: 16) { t, _ in
+    vfeature(t, kick: "الرفع", title: "دوسة واحدة\nيبني ويمضي ويرفع", body: "ويضيف التسترز ويبعته للريفيو كمان.",
+             screenName: "dark-05-ship-ios", color: violet, focus: (0.92, 0.938), zoomTo: 1.9, zoomAt: 0.5, logos: [.testflight, .apple]) { t, proj in
+        let target = proj(0.905, 0.94)
+        let mp = easeInOut(prog(t, 1.9, 0.8))
+        guard mp > 0 else { return }
+        let press = prog(t, 2.75, 0.15) * (1 - prog(t, 2.9, 0.15))
+        let cp = prog(t, 2.8, 0.7)
+        if cp > 0 && cp < 1 {
+            ctx.setStrokeColor(rgb(1, 1, 1, (1 - cp) * 0.9)); ctx.setLineWidth(5 * (1 - cp))
+            let r = 24 + cp * 140
+            ctx.strokeEllipse(in: CGRect(x: target.x - r, y: target.y - r, width: r * 2, height: r * 2))
+        }
+        let px = lerp(target.x - 320, target.x, mp), py = lerp(target.y - 260, target.y, mp)
+        let k = 1 - 0.18 * press
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 6), blur: 12, color: rgb(0, 0, 0, 0.6))
+        symbol("cursorarrow", CGRect(x: px - 6, y: py - 4, width: 50 * k, height: 62 * k), color: .white, alpha: clamp(mp * 3))
+        ctx.restoreGState()
+    }
+})
+tiktok.append(Scene(start: 16, end: 20) { t, _ in
+    let done = t >= 2.0
+    vfeature(t, kick: "المتابعة", title: "تابع كل خطوة\nأول بأول", body: "ولو حاجة وقفت، تكمّل من مكانها.",
+             screenName: done ? "dark-09-console-succeeded" : "dark-09-console-running", color: done ? mint : cyan,
+             focus: (0.25, 0.5), zoomTo: 1.4, zoomAt: 0.5) { t, _ in
+        let steps: [Logo] = [.sym("hammer.fill", violet), .sym("icloud.and.arrow.up.fill", cyan), .testflight]
+        let size = 100.0, gap = 80.0
+        let right = 510 + (3 * size + 2 * gap) / 2
+        for (i, l) in steps.enumerated() {
+            let cx = right - size / 2 - Double(i) * (size + gap)
+            logoTile(l, cx: cx, cy: 1410, size: size, t: t, at: 0.9 + Double(i) * 0.3, glow: mint)
+            let lit = prog(t, 1.2 + Double(i) * 0.3, 0.3)
+            if lit > 0 {
+                ctx.saveGState()
+                ctx.setShadow(offset: .zero, blur: 16, color: rgb(mint.0, mint.1, mint.2, 0.9))
+                ctx.setFillColor(rgb(mint.0, mint.1, mint.2, lit))
+                ctx.fillEllipse(in: CGRect(x: cx + size / 2 - 22, y: 1410 - size / 2 - 8, width: 32, height: 32))
+                ctx.restoreGState()
+                symbol("checkmark", CGRect(x: cx + size / 2 - 14, y: 1410 - size / 2 - 0, width: 16, height: 16), color: NSColor(white: 0.05, alpha: 1), alpha: lit, weight: .black)
+            }
+            if i < steps.count - 1 {
+                symbol("chevron.left", CGRect(x: cx - size / 2 - gap / 2 - 14, y: 1394, width: 28, height: 32), color: NSColor(white: 1, alpha: 0.6),
+                       alpha: clamp(prog(t, 1.1 + Double(i) * 0.3, 0.3)))
+            }
+        }
+    }
+    let sp = spring(prog(t, 2.05, 0.5))
+    if sp > 0 {
+        ctx.saveGState()
+        ctx.translateBy(x: 700, y: 360)
+        ctx.rotate(by: -8 * .pi / 180)
+        ctx.scaleBy(x: sp, y: sp)
+        pill(CGRect(x: -160, y: -52, width: 320, height: 104), fill: rgb(mint.0, mint.1, mint.2, 0.96))
+        text("اترفع!", x: -130, y: -42, width: 180, size: 54, weight: .black, color: NSColor(white: 0.05, alpha: 1), align: .right)
+        symbol("checkmark", CGRect(x: 72, y: -24, width: 48, height: 48), color: NSColor(white: 0.05, alpha: 1), weight: .black)
+        ctx.restoreGState()
+    }
+})
+tiktok.append(Scene(start: 20, end: 24) { t, _ in
+    vfeature(t, kick: "", title: "كل الـ tracks\nفي حتة واحدة", body: "للكل، أو بالتدريج، أو درافت.",
+             screenName: "light-03-play", color: mint, focus: (0.62, 0.36), zoomTo: 1.5, zoomAt: 0.5,
+             callout: (0.44, 0.29, 0.207, 0.175), calloutLabel: "بالتدريج", kickLogo: .play) { t, _ in
+        let a = easeOut(prog(t, 1.0, 0.4))
+        guard a > 0 else { return }
+        let stops = [5.0, 20, 50, 100]
+        let k = min(3, Int(max(0, (t - 1.4) / 0.55)))
+        let from = k == 0 ? 0 : stops[k - 1], to = stops[k]
+        let v = lerp(from, to, easeOut(prog(t, 1.4 + Double(k) * 0.55, 0.35)))
+        let bar = CGRect(x: 330, y: 1388, width: 520, height: 44)
+        ctx.saveGState(); ctx.setAlpha(a)
+        pill(bar, fill: rgb(1, 1, 1, 0.10), stroke: rgb(1, 1, 1, 0.2))
+        let fw = max(bar.height, bar.width * v / 100)
+        pill(CGRect(x: bar.maxX - fw, y: bar.minY, width: fw, height: bar.height), fill: rgb(mint.0, mint.1, mint.2, 0.95))
+        text("\u{200E}\(Int(v.rounded()))%", x: 140, y: bar.minY - 8, width: 170, size: 44, weight: .heavy,
+             color: ns(mint).blended(withFraction: 0.3, of: .white)!, align: .right)
+        ctx.restoreGState()
+    }
+})
+
+// 24–32: no Mac? GitHub builds it.
+tiktok.append(Scene(start: 24, end: 28) { t, g in
+    reveal("معندكش ماك؟", x: 60, y: 600, width: 900, size: 124, weight: .black, t: t, at: 0.05, dur: 0.5, out: 1.6)
+    reveal("ولا يهمك.", x: 60, y: 820, width: 900, size: 100, weight: .black, color: ns(cyan), t: t, at: 0.7, dur: 0.45, out: 1.6)
+    let p = easeOut(prog(t, 1.9, 0.6))
+    guard p > 0 else { return }
+    logoTile(.github, cx: 510, cy: 480, size: 230, t: t, at: 1.9, glow: cyan)
+    ctx.setStrokeColor(rgb(1, 1, 1, 0.25 * p)); ctx.setLineWidth(3); ctx.setLineDash(phase: -g * 60, lengths: [14, 12])
+    ctx.move(to: CGPoint(x: 510, y: 620)); ctx.addLine(to: CGPoint(x: 510, y: 830)); ctx.strokePath(); ctx.setLineDash(phase: 0, lengths: [])
+    for k in 0..<3 {
+        let q = ((g * 0.9 + Double(k) / 3).truncatingRemainder(dividingBy: 1))
+        ctx.setFillColor(rgb(cyan.0, cyan.1, cyan.2, p * (1 - abs(q - 0.5) * 1.6)))
+        ctx.fillEllipse(in: CGRect(x: 510 - 10, y: 620 + q * 210 - 10, width: 20, height: 20))
+    }
+    let phone = CGRect(x: 425, y: 850, width: 170, height: 320)
+    ctx.saveGState(); ctx.setAlpha(p)
+    ctx.addPath(CGPath(roundedRect: phone, cornerWidth: 36, cornerHeight: 36, transform: nil))
+    ctx.setFillColor(rgb(0.08, 0.08, 0.14)); ctx.fillPath()
+    ctx.addPath(CGPath(roundedRect: phone, cornerWidth: 36, cornerHeight: 36, transform: nil))
+    ctx.setStrokeColor(rgb(1, 1, 1, 0.85)); ctx.setLineWidth(6); ctx.strokePath()
+    pill(CGRect(x: phone.midX - 28, y: phone.minY + 16, width: 56, height: 14), fill: rgb(1, 1, 1, 0.85))
+    ctx.restoreGState()
+    let ip = spring(prog(t, 2.8, 0.6))
+    if ip > 0 { drawCG(icon, CGRect(x: phone.midX - 48 * ip, y: phone.midY - 48 * ip, width: 96 * ip, height: 96 * ip)) }
+    logoRow([.apple, .android], cx: 510, cy: 1250, size: 84, gap: 22, t: t, at: 2.3)
+    reveal("GitHub يبني ويرفع بدالك", x: 60, y: 1330, width: 900, size: 64, t: t, at: 2.2)
+})
+tiktok.append(Scene(start: 28, end: 32) { t, _ in
+    let enter = easeOut(prog(t, 0, 0.8))
+    screen("dark-05-ship-ios", cx: 510, cy: lerp(660, 600, enter), width: 1000 * lerp(0.88, 1, enter), rotY: lerp(-20, -3, enter), rotX: lerp(16, 3, enter),
+           alpha: clamp(t / 0.25), zoom: lerp(1, 2.3, easeInOut(prog(t, 0.4, 1.2))), focus: (0.376, 0.563), glow: cyan)
+    logoTile(.github, cx: 510, cy: 1000, size: 84, t: t, at: 0.2, glow: cyan)
+    reveal("بيظبطهولك\nمن نفس الشاشة", x: 100, y: 1050, width: 820, size: 70, t: t, at: 0.3)
+    let labels = ["سجّلت دخول", "الـ workflow جاهز", "الـ secrets اتحطت"]
+    for (i, l) in labels.enumerated() {
+        chip(l, icon: "checkmark.circle.fill", cx: 510, cy: 1290 + Double(i) * 64, t: t, at: 1.3 + Double(i) * 0.3, tint: mint, size: 24)
+    }
+})
+
+// 32–40: everything else, fast
+tiktok.append(Scene(start: 32, end: 36) { t, g in
+    reveal("ولسه في كمان", x: 60, y: 200, width: 900, size: 88, t: t, at: 0)
+    for (i, f) in grid.enumerated() {
+        let cx = i % 2 == 0 ? 745.0 : 275.0, cy = 560 + Double(i / 2) * 290
+        let p = spring(prog(t, 0.35 + Double(i) * 0.22, 0.55))
+        guard p > 0 else { continue }
+        ctx.saveGState()
+        ctx.translateBy(x: cx, y: cy + sin(g * 2 + Double(i)) * 5)
+        ctx.scaleBy(x: p, y: p)
+        let r = CGRect(x: -215, y: -125, width: 430, height: 250)
+        ctx.setShadow(offset: CGSize(width: 0, height: 16), blur: 40, color: rgb(0, 0, 0, 0.5))
+        ctx.addPath(CGPath(roundedRect: r, cornerWidth: 32, cornerHeight: 32, transform: nil))
+        ctx.setFillColor(rgb(1, 1, 1, 0.08)); ctx.fillPath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.addPath(CGPath(roundedRect: r, cornerWidth: 32, cornerHeight: 32, transform: nil))
+        ctx.setStrokeColor(rgb(f.2.0, f.2.1, f.2.2, 0.6)); ctx.setLineWidth(2); ctx.strokePath()
+        drawLogo(f.1, in: CGRect(x: -46, y: -105, width: 92, height: 92))
+        text(f.0, x: -200, y: 8, width: 400, size: 38, weight: .bold, align: .center)
+        ctx.restoreGState()
+    }
+})
+tiktok.append(Scene(start: 36, end: 38) { t, _ in
+    reveal("شغّال على أي جهاز", x: 60, y: 600, width: 900, size: 92, t: t, at: 0.05, dur: 0.45)
+    logoRow([.apple, .windows, .linux], cx: 510, cy: 920, size: 190, gap: 50, t: t, at: 0.3, step: 0.2)
+})
+tiktok.append(Scene(start: 38, end: 40) { t, _ in
+    logoTile(.app(keychainApp), cx: 510, cy: 560, size: 270, t: t, at: 0.0)
+    reveal("مفاتيحك مابتخرجش\nمن جهازك", x: 60, y: 760, width: 900, size: 88, t: t, at: 0.15, dur: 0.45)
+    reveal("ومابتروحش غير هنا:", x: 60, y: 1010, width: 900, size: 44, weight: .medium, color: NSColor(white: 0.86, alpha: 1), t: t, at: 0.45, dur: 0.4)
+    logoRow([.apple, .play, .github], cx: 510, cy: 1180, size: 120, gap: 32, t: t, at: 0.6, step: 0.15)
+})
+
+// 40–48: end card
+tiktok.append(Scene(start: 40, end: 48) { t, _ in
+    let p = spring(prog(t, 0.1, 0.9))
+    let rp = prog(t, 0.3, 1.1)
+    if rp > 0 && rp < 1 {
+        ctx.setStrokeColor(rgb(0.6, 0.5, 1, (1 - rp) * 0.8)); ctx.setLineWidth(6 * (1 - rp))
+        let rr = 140 + rp * 480
+        ctx.strokeEllipse(in: CGRect(x: 510 - rr, y: 560 - rr, width: rr * 2, height: rr * 2))
+    }
+    if p > 0.01 {
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 20), blur: 90, color: rgb(0.45, 0.35, 1, 0.85))
+        drawCG(icon, CGRect(x: 510 - 130 * p, y: 560 - 130 * p, width: 260 * p, height: 260 * p))
+        ctx.restoreGState()
+    }
+    reveal("Release Desk", x: 60, y: 730, width: 900, size: 114, t: t, at: 0.4)
+    reveal("ارفع على الستورين بدوسة واحدة", x: 60, y: 905, width: 900, size: 54, weight: .heavy, color: ns(cyan), t: t, at: 0.8)
+    let up = spring(prog(t, 1.4, 0.6))
+    if up > 0.01 {
+        let label = "اللينك في البايو"
+        let w = textWidth(label, size: 46, weight: .heavy) + 150, h = 100.0
+        ctx.saveGState()
+        ctx.translateBy(x: 510, y: 1100); ctx.scaleBy(x: up, y: up)
+        ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 40, color: rgb(indigo.0, indigo.1, indigo.2, 0.8))
+        pill(CGRect(x: -w / 2, y: -h / 2, width: w, height: h), fill: rgb(indigo.0, indigo.1, indigo.2, 1))
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        symbol("link", CGRect(x: -w / 2 + 34, y: -20, width: 42, height: 40), color: .white)
+        text(label, x: -w / 2 + 90, y: -33, width: w - 120, size: 46, weight: .heavy, align: .right)
+        ctx.restoreGState()
+    }
+    logoRow([.apple, .windows, .linux], cx: 510, cy: 1290, size: 96, gap: 30, t: t, at: 2.0, step: 0.2)
+})
+
 func tint(at g: Double) -> ((Double, Double, Double), Double) {
     switch g {
     case 16..<32, 40..<56: (g >= 26 && g < 28 ? mint : indigo, 1.0)
@@ -813,12 +1104,16 @@ func tint(at g: Double) -> ((Double, Double, Double), Double) {
 
 // MARK: - Render
 
+/// Where in the soundtrack a frame is (the vertical cut skips parts of it).
+func musicTime(_ g: Double) -> Double { vertical ? (g < 40 ? g + 8 : g + 16) : g }
+
 func renderFrame(_ g: Double) {
-    let (tc, energy) = tint(at: g)
-    let beatBoost = (g >= 16 && g < 32) || (g >= 40 && g < 56) ? pulse(g, every: 0.5, decay: 8) : 0
+    let m = musicTime(g)
+    let (tc, energy) = tint(at: m)
+    let beatBoost = (m >= 16 && m < 32) || (m >= 40 && m < 56) ? pulse(g, every: 0.5, decay: 8) : 0
     background(g, tint: tc, energy: energy + beatBoost * 0.4)
     let fade = 0.35
-    for s in scenes where g >= s.start - 0.001 && g < s.end + fade {
+    for s in (vertical ? tiktok : scenes) where g >= s.start - 0.001 && g < s.end + fade {
         let local = g - s.start
         var a = 1.0
         if g > s.end { a = 1 - (g - s.end) / fade }
@@ -832,12 +1127,12 @@ func renderFrame(_ g: Double) {
         ctx.restoreGState()
     }
     // Flashes on the drops.
-    for drop in [16.0, 40.0] where g >= drop && g < drop + 0.5 {
+    for drop in (vertical ? [8.0, 32.0] : [16.0, 40.0]) where g >= drop && g < drop + 0.5 {
         ctx.setFillColor(rgb(1, 1, 1, 0.55 * (1 - (g - drop) / 0.5)))
         ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
     }
     // Fade from and to black.
-    let edge = min(clamp(g / 0.6), clamp((duration - g) / 1.5))
+    let edge = min(vertical ? 1 : clamp(g / 0.6), clamp((duration - g) / 1.5))
     if edge < 1 { ctx.setFillColor(rgb(0, 0, 0, 1 - edge)); ctx.fill(CGRect(x: 0, y: 0, width: W, height: H)) }
 }
 
