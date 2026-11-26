@@ -1,0 +1,97 @@
+# Written by Release Desk. Builds the iOS app on a GitHub macOS runner,
+# signs it with Apple's cloud signing and uploads it to App Store Connect.
+# Release Desk starts it and then does the TestFlight steps itself.
+# Needs the repository secrets ASC_KEY_ID, ASC_ISSUER_ID and ASC_PRIVATE_KEY.
+name: Release Desk iOS
+run-name: Release Desk iOS ${{ inputs.version }} (${{ inputs.build }}) ${{ inputs.release_desk_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (CFBundleShortVersionString)
+        required: true
+      build:
+        description: Build number (CFBundleVersion)
+        required: true
+      upload:
+        description: Upload to App Store Connect (false builds and signs only)
+        type: boolean
+        default: true
+      release_desk_id:
+        description: Set by Release Desk to find this run
+        required: false
+        default: ""
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Pick the newest Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.50.0
+          cache: true
+
+      - name: API key
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Archive
+        run: flutter build ipa --release --no-codesign --build-name "${{ inputs.version }}" --build-number "${{ inputs.build }}"
+
+      - name: Pre-sign
+        run: |
+          APP=build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app
+          for f in "$APP"/Frameworks/*.framework "$APP"/Frameworks/*.dylib "$APP"/PlugIns/*.appex; do
+            [ -e "$f" ] && codesign -f -s - "$f"
+          done
+          if [ -f "ios/Runner/Runner.entitlements" ]; then
+            codesign -f -s - --entitlements "ios/Runner/Runner.entitlements" "$APP"
+          else
+            codesign -f -s - "$APP"
+          fi
+
+      - name: Export and sign
+        run: |
+          OPTS="ios/ExportOptions.plist"
+          if [ ! -f "$OPTS" ]; then
+            OPTS="$RUNNER_TEMP/ExportOptions.plist"
+            /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" -c "Add :destination string export" \
+              -c "Add :signingStyle string automatic" -c "Add :teamID string ABCDE12345" "$OPTS"
+          fi
+          xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive -exportPath build/ios/release-desk \
+            -exportOptionsPlist "$OPTS" -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          ls -la build/ios/release-desk
+
+      - name: Upload
+        if: ${{ inputs.upload }}
+        run: |
+          xcrun altool --upload-app -f build/ios/release-desk/*.ipa -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" \
+            --p8-file-path "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"

@@ -1,0 +1,76 @@
+# Written by Release Desk. Builds the Android app bundle on a GitHub runner,
+# signed with your upload key, and keeps it as the release-desk-aab artifact.
+# Release Desk downloads it and releases it on Google Play.
+# Needs the repository secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD.
+name: Release Desk Android
+run-name: Release Desk Android ${{ inputs.version }} (${{ inputs.build }}) ${{ inputs.release_desk_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version name
+        required: true
+      build:
+        description: Version code
+        required: true
+      release_desk_id:
+        description: Set by Release Desk to find this run
+        required: false
+        default: ""
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.50.0
+          cache: true
+
+      - name: Upload key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/upload.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/key.properties
+
+      - name: Build app bundle
+        run: flutter build appbundle --release --build-name "${{ inputs.version }}" --build-number "${{ inputs.build }}"
+
+      - name: Check signing
+        run: keytool -printcert -jarfile build/app/outputs/bundle/release/app-release.aab | head -6
+
+      - name: Keep the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-desk-aab
+          path: mobile/build/app/outputs/bundle/release/app-release.aab
+          retention-days: 3
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks" android/key.properties

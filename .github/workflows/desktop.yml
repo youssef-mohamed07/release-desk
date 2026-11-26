@@ -1,0 +1,128 @@
+# Builds Release Desk for Windows and Linux (the Flutter app in desktop/).
+# Runs by hand, and on version tags, where it attaches both builds to the
+# GitHub release of that tag.
+name: Desktop (Windows and Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.50.0"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Linux build tools
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev libjsoncpp-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build
+        run: flutter build linux --release
+
+      - name: Package
+        run: |
+          rm -rf ReleaseDesk
+          cp -r build/linux/x64/release/bundle ReleaseDesk
+          tar -czf ReleaseDesk-linux-x64.tar.gz ReleaseDesk
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReleaseDesk-linux-x64
+          path: desktop/ReleaseDesk-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Build
+        run: flutter build windows --release
+
+      - name: Package
+        run: |
+          $release = "build/windows/x64/runner/Release"
+          # The Visual C++ runtime, so the app starts on a PC without it.
+          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            $src = Join-Path $env:WINDIR "System32\$dll"
+            if (Test-Path $src) { Copy-Item $src $release -Force }
+          }
+          if (Test-Path ReleaseDesk) { Remove-Item ReleaseDesk -Recurse -Force }
+          Copy-Item $release ReleaseDesk -Recurse
+          Compress-Archive -Path ReleaseDesk -DestinationPath ReleaseDesk-windows-x64.zip -Force
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReleaseDesk-windows-x64
+          path: desktop/ReleaseDesk-windows-x64.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Get the builds
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ReleaseDesk-windows-x64.zip
+            dist/ReleaseDesk-linux-x64.tar.gz
+          fail_on_unmatched_files: true

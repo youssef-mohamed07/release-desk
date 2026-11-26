@@ -15,6 +15,10 @@ A native macOS app for shipping mobile apps to **App Store Connect / TestFlight*
    ```
 3. Needs **macOS 26** or later, on Apple silicon or Intel. To build apps on this Mac you also need Xcode and Flutter. With GitHub Actions builds, you don't.
 
+### Windows and Linux
+
+`ReleaseDesk-windows-x64.zip` and `ReleaseDesk-linux-x64.tar.gz` on the same release page are the Flutter version of Release Desk (source in [`desktop/`](desktop)). It does the same App Store Connect, TestFlight and Google Play work. iOS builds run on GitHub Actions, because Windows and Linux can't build iOS apps; Android builds run on the computer itself or on GitHub. See [desktop/README.md](desktop/README.md).
+
 ## What it does
 
 | | |
