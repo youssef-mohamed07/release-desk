@@ -396,7 +396,7 @@ struct ShipComposer: View {
             HStack {
                 Label("Changes since build \(latest?.number ?? "–")", systemImage: "arrow.triangle.branch").font(.headline)
                 Spacer()
-                Text("\(commits.count) commits").font(.caption).foregroundStyle(.secondary)
+                Text(counted(commits.count, "commit")).font(.caption).foregroundStyle(.secondary)
             }
             if commits.isEmpty {
                 Text("No commits since the last upload.").font(.callout).foregroundStyle(.secondary)
@@ -463,7 +463,7 @@ struct ShipComposer: View {
         var s = "Builds \(folder) and uploads it to App Store Connect."
         if !groups.isEmpty {
             let testers = groups.compactMap(\.testerCount).reduce(0, +)
-            s += " Adds it to \(privacy ? "\(groups.count) tester groups" : groups.map(\.name).joined(separator: " and ")) (\(testers) testers)."
+            s += " Adds it to \(privacy ? counted(groups.count, "tester group") : groups.map(\.name).joined(separator: " and ")) (\(counted(testers, "tester")))."
         }
         if notes.values.contains(where: { !$0.isEmpty }) { s += " Writes What to Test." }
         if submitForReview && groups.contains(where: { !$0.isInternal }) { s += " Submits it for beta app review." }

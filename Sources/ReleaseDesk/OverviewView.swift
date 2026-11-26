@@ -42,7 +42,7 @@ struct OverviewView: View {
             }
             .font(.system(size: 30, weight: .bold, design: .rounded))
             HStack(spacing: 14) {
-                Stat(value: "\(appsCount)", label: "apps")
+                Stat(value: "\(appsCount)", label: appsCount == 1 ? "app" : "apps")
                 Stat(value: "\(teamCount)", label: teamCount == 1 ? "team" : "teams")
                 Stat(value: "\(testing)", label: "on TestFlight")
                 if model.runningCount > 0 { Stat(value: "\(model.runningCount)", label: "shipping now", tint: Palette.cyan) }
@@ -308,11 +308,11 @@ struct WelcomeView: View {
                     ProviderTile(title: "App Store Connect", subtitle: "API key (.p8) per team", symbol: "apple.logo", enabled: true) {
                         model.connecting = .apple
                     }
-                    ProviderTile(title: "Google Play", subtitle: "Service account per developer account", symbol: nil, enabled: true) {
+                    ProviderTile(title: "Google Play", subtitle: "Sign in with Google", symbol: nil, enabled: true) {
                         model.connecting = .google
                     }
                 }
-                Text("Keys go to your Keychain. Nothing leaves this Mac except calls to Apple and Google.")
+                Text("Keys go to your Keychain. Nothing leaves this Mac except calls to Apple, Google and GitHub.")
                     .font(.callout).foregroundStyle(.tertiary)
             }
             .padding(40)

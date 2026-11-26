@@ -209,6 +209,9 @@ extension Date {
     var short: String { formatted(.dateTime.day().month(.abbreviated).hour().minute()) }
 }
 
+/// "1 app", "2 apps".
+func counted(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+
 func clock(_ t: TimeInterval) -> String {
     let s = Int(max(0, t))
     return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%02d:%02d", s / 60, s % 60)

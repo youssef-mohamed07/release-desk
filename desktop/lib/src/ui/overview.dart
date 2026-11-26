@@ -144,7 +144,7 @@ class _OverviewPageState extends State<OverviewPage> {
         Wrap(
           spacing: 14,
           children: [
-            Stat('$appsCount', 'apps'),
+            Stat('$appsCount', appsCount == 1 ? 'app' : 'apps'),
             Stat('$teamCount', teamCount == 1 ? 'team' : 'teams'),
             Stat('$testing', 'on TestFlight'),
             if (model.runningCount > 0) Stat('${model.runningCount}', 'shipping now', tint: Palette.cyan),

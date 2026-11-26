@@ -1120,6 +1120,9 @@ String clock(Duration t) {
 
 String hhmmss(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
 
+/// "1 app", "2 apps".
+String counted(int n, String word) => '$n ${n == 1 ? word : '${word}s'}';
+
 /// Set by demos and screenshot tests to show paths under a stand-in home.
 String? debugHomeOverride;
 

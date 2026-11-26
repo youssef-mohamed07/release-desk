@@ -123,7 +123,7 @@ struct ConnectSheet: View {
                 }
                 if !foundApps.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(foundApps.count) apps on Play").font(.caption).foregroundStyle(.secondary)
+                        Text("\(counted(foundApps.count, "app")) on Play").font(.caption).foregroundStyle(.secondary)
                         FlowLayout(spacing: 6) {
                             ForEach(foundApps) { a in
                                 Label(a.name, systemImage: "app.fill").font(.caption).sensitive(4)
@@ -343,7 +343,7 @@ struct ConnectSheet: View {
                 switch v {
                 case .apple(let teamID, let apps):
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Key works · \(apps.count) apps", systemImage: "checkmark.seal.fill")
+                        Label("Key works · \(counted(apps.count, "app"))", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(Palette.mint)
                         Text(apps.prefix(8).map(\.name).joined(separator: " · ") + (apps.count > 8 ? " …" : ""))
                             .font(.caption).foregroundStyle(.secondary).sensitive(4)

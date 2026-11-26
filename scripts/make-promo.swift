@@ -3,15 +3,19 @@
 // is exactly two seconds). Renders 1920×1080 at 30 fps, no audio; mux after.
 //
 // Usage: swiftc -O scripts/make-promo.swift -o /tmp/make-promo && /tmp/make-promo [--tiktok] SHOTS_DIR ICON.png out.mp4
+//        /tmp/make-promo --poster SHOTS_DIR ICON.png poster.png 0
 import AppKit
 import AVFoundation
 import CoreImage
 
 // --tiktok renders the vertical cut: 1080×1920, 48 s, the music from its build (8 s) to
-// the middle of the second drop (48 s), then the outro (56–64 s); see the ffmpeg line in README.
-let vertical = CommandLine.arguments.contains("--tiktok")
-let args = CommandLine.arguments.filter { $0 != "--tiktok" }
-let W = vertical ? 1080.0 : 1920.0, H = vertical ? 1920.0 : 1080.0, FPS = 30
+// the middle of the second drop (48 s), then the outro (56–64 s). Mux each with the track:
+//   ffmpeg -i video.mp4 -i track.wav -map 0:v -map 1:a -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -t 64 promo.mp4
+//   ffmpeg -i tiktok.mp4 -i track.wav -filter_complex "[1:a]atrim=8:48,asetpts=PTS-STARTPTS[a1];[1:a]atrim=56:64.5,asetpts=PTS-STARTPTS[a2];[a1][a2]acrossfade=d=0.04[a3];[a3]afade=t=out:st=46.3:d=1.7[a]" -map 0:v -map "[a]" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -t 48 tiktok-final.mp4
+// --poster draws one still (1600×1120) of the interface, for sharing: pass any frame time.
+let vertical = CommandLine.arguments.contains("--tiktok"), poster = CommandLine.arguments.contains("--poster")
+let args = CommandLine.arguments.filter { $0 != "--tiktok" && $0 != "--poster" }
+let W = poster ? 1600.0 : (vertical ? 1080.0 : 1920.0), H = poster ? 1120.0 : (vertical ? 1920.0 : 1080.0), FPS = 30
 let duration = vertical ? 48.0 : 64.0
 let shotsDir = URL(fileURLWithPath: args[1])
 let iconURL = URL(fileURLWithPath: args[2])
@@ -1136,6 +1140,22 @@ func renderFrame(_ g: Double) {
     if edge < 1 { ctx.setFillColor(rgb(0, 0, 0, 1 - edge)); ctx.fill(CGRect(x: 0, y: 0, width: W, height: H)) }
 }
 
+/// The still for sharing: name, promise, the overview screen and what it talks to.
+func drawPoster() {
+    background(3, tint: indigo, energy: 0.5)
+    let name = "Release Desk", size = 66.0, iconSize = 88.0, gap = 22.0
+    let nameW = textWidth(name, size: size, weight: .heavy)
+    let x0 = W / 2 - (iconSize + gap + nameW) / 2
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 40, color: rgb(0.45, 0.35, 1, 0.8))
+    drawCG(icon, CGRect(x: x0, y: 48, width: iconSize, height: iconSize))
+    ctx.restoreGState()
+    text(name, x: x0 + iconSize + gap, y: 48 + iconSize / 2 - size * 0.68, width: nameW + 20, size: size, weight: .heavy, align: .left)
+    text("ارفع أبلكيشناتك على الستورين بدوسة واحدة", x: 100, y: 158, width: W - 200, size: 40, weight: .bold, color: ns(cyan), align: .center)
+    screen("dark-01-overview", cx: W / 2, cy: 640, width: 1200, rotX: 6, glow: indigo)
+    logoRow([.apple, .play, .github], cx: W / 2, cy: 1074, size: 62, gap: 22, t: 10, at: 0)
+}
+
 func withFrameContext(_ data: UnsafeMutableRawPointer?, bytesPerRow: Int, _ body: () -> Void) {
     ctx = CGContext(data: data, width: Int(W), height: Int(H), bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: space,
                     bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
@@ -1149,7 +1169,7 @@ func withFrameContext(_ data: UnsafeMutableRawPointer?, bytesPerRow: Int, _ body
 
 if let at = onlyFrame {
     withFrameContext(nil, bytesPerRow: 0) {
-        if at < 0 {
+        if poster { drawPoster() } else if at < 0 {
             background(0, tint: indigo, energy: 0.3)
             let all: [Logo] = [.apple, .play, .github, .android, .windows, .linux, .testflight, .app(xcodeApp), .app(studioApp), .app(terminalApp), .app(keychainApp), .sym("lock.fill", indigo)]
             for (i, l) in all.enumerated() { logoTile(l, cx: 200 + Double(i % 6) * 300, cy: 300 + Double(i / 6) * 400, size: 200, t: 5, at: 0) }

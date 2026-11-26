@@ -66,7 +66,7 @@ public actor GitHubClient {
             token = t.trimmingCharacters(in: .whitespacesAndNewlines)
             return token!
         }
-        throw ReleaseError.precondition("Release Desk needs GitHub: sign in with the GitHub CLI (gh auth login) or save a token in Settings.")
+        throw ReleaseError.precondition("Release Desk needs GitHub: sign in with the GitHub CLI: gh auth login.")
     }
 
     /// The signed-in GitHub user, to show who Release Desk acts as.

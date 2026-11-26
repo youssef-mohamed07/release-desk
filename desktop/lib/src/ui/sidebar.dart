@@ -181,7 +181,7 @@ class _SidebarState extends State<Sidebar> {
               Sensitive(
                 radius: team.teamId == null ? 0 : 4,
                 child: Text(
-                  [?team.teamId, if (state != null) '${state.apps.length} apps'].join(' · '),
+                  [?team.teamId, if (state != null) counted(state.apps.length, 'app')].join(' · '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 10.5, color: t.text2),

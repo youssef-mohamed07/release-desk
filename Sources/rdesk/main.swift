@@ -19,7 +19,14 @@ func fail(_ message: String) -> Never {
 }
 
 guard let command = args.first else {
-    fail("usage: rdesk apps|builds|groups|versions|team --key-id ID --issuer ISSUER [--app APP_ID] [--key-file PATH]")
+    fail("""
+    usage: rdesk apps|team --key-id ID --issuer ISSUER [--key-file PATH]
+           rdesk builds|groups|versions|readiness --key-id ID --issuer ISSUER --app APP_ID [--key-file PATH]
+           rdesk bundle --key-id ID --issuer ISSUER --bundle BUNDLE_ID [--key-file PATH]
+           rdesk play-apps --json SERVICE_ACCOUNT.json
+           rdesk play-tracks --json SERVICE_ACCOUNT.json --package PACKAGE
+           rdesk workflow [--android] [--dir mobile] [--team TEAMID] [--flutter 3.x]
+    """)
 }
 // The GitHub Actions workflow for cloud builds: rdesk workflow [--dir mobile] [--team TEAMID] [--flutter 3.x]
 if command == "workflow" {

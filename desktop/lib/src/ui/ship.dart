@@ -1022,7 +1022,7 @@ class _IosComposerState extends State<IosComposer> {
     if (!rehearsal) {
       if (g.isNotEmpty) {
         final testers = g.map((x) => x.testerCount ?? 0).fold<int>(0, (a, b) => a + b);
-        msg += ' Adds it to ${privacy ? '${g.length} tester groups' : g.map((x) => x.name).join(' and ')} ($testers testers).';
+        msg += ' Adds it to ${privacy ? counted(g.length, 'tester group') : g.map((x) => x.name).join(' and ')} (${counted(testers, 'tester')}).';
       }
       if (notes.values.any((c) => c.text.trim().isNotEmpty)) msg += ' Writes What to Test.';
       if (submitForReview && g.any((x) => !x.isInternal)) msg += ' Submits it for beta app review.';
@@ -1206,7 +1206,7 @@ class _IosComposerState extends State<IosComposer> {
                 CardTitle(
                   'Changes since build ${latest?.number ?? '–'}',
                   Icons.call_split_rounded,
-                  trailing: Text('${commits.length} commits', style: TextStyle(fontSize: 12, color: t.text2)),
+                  trailing: Text(counted(commits.length, 'commit'), style: TextStyle(fontSize: 12, color: t.text2)),
                 ),
                 const SizedBox(height: 10),
                 if (commits.isEmpty) Text('No commits since the last upload.', style: TextStyle(fontSize: 13.5, color: t.text2)),

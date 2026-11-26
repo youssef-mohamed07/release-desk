@@ -128,7 +128,7 @@ struct Sidebar: View {
                     Text(team.name).lineLimit(1).sensitive(5)
                     HStack(spacing: 3) {
                         if let id = team.teamID { Text(id).sensitive(4); Text("·") }
-                        Text(state.map { "\($0.apps.count) apps" } ?? "")
+                        Text(state.map { counted($0.apps.count, "app") } ?? "")
                     }
                     .font(.caption2).foregroundStyle(.secondary)
                 }

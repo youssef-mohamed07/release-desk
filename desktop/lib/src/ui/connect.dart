@@ -572,7 +572,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
                     Icon(Icons.verified_rounded, size: 18, color: Palette.mint),
                     const SizedBox(width: 8),
                     Text(
-                      'Key works · ${verified!.apps.length} apps',
+                      'Key works · ${counted(verified!.apps.length, 'app')}',
                       style: TextStyle(color: Palette.mint, fontWeight: FontWeight.w600),
                     ),
                   ],
@@ -617,7 +617,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${foundApps.length} apps on Play', style: TextStyle(fontSize: 12, color: t.text2)),
+                Text('${counted(foundApps.length, 'app')} on Play', style: TextStyle(fontSize: 12, color: t.text2)),
                 const SizedBox(height: 6),
                 Wrap(spacing: 6, runSpacing: 6, children: [for (final a in foundApps) Tag(a.name, icon: Icons.apps_rounded, sensitive: true)]),
               ],

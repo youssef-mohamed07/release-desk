@@ -36,7 +36,7 @@ struct CommandPalette: View {
             Item(id: "activity", title: "Activity", subtitle: "Releases and their logs", symbol: "waveform.path.ecg", appID: nil, provider: nil) { $0.route = .activity },
             Item(id: "new-app", title: "New app", subtitle: "Bundle id, store records, groups and upload key", symbol: "sparkles", appID: nil, provider: nil) { $0.newApp = true },
             Item(id: "connect-apple", title: "Connect App Store Connect", subtitle: "Add a team with its API key", symbol: "apple.logo", appID: nil, provider: nil) { $0.connecting = .apple },
-            Item(id: "connect-google", title: "Connect Google Play", subtitle: "Add a developer account with its service account", symbol: "play.fill", appID: nil, provider: nil) { $0.connecting = .google },
+            Item(id: "connect-google", title: "Connect Google Play", subtitle: "Sign in with Google, or use a service account", symbol: "play.fill", appID: nil, provider: nil) { $0.connecting = .google },
             Item(id: "refresh", title: "Refresh everything", subtitle: "Ask both stores again", symbol: "arrow.clockwise", appID: nil, provider: nil) { m in Task { await m.refreshAll() } },
         ]
         let words = query.lowercased().split(separator: " ").map(String.init)
