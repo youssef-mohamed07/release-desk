@@ -10,6 +10,7 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         switch platform {
         case .ios where cloud: [.prepare, .cloudBuild, .processing, .notes, .groups, .review, .live]
         case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .groups, .review, .live]
+        case .android where cloud: [.prepare, .cloudBuild, .playRelease]
         case .android: [.prepare, .bundle, .checkSigning, .playRelease]
         }
     }
@@ -95,10 +96,14 @@ public struct PlayTarget: Sendable, Hashable {
     }
 }
 
-/// An iOS build made on a GitHub macOS runner instead of this Mac.
+/// A build made on a GitHub runner instead of this Mac.
 public struct CloudBuild: Sendable, Hashable {
     public var repo: GitHubRepo
-    public init(repo: GitHubRepo) { self.repo = repo }
+    public var target: CloudTarget
+    public init(repo: GitHubRepo, target: CloudTarget = .ios) {
+        self.repo = repo
+        self.target = target
+    }
 }
 
 /// Everything one release run needs, decided before it starts.
@@ -255,7 +260,9 @@ public final class ReleaseRun: Identifiable {
         log("Release \(plan.app.name) \(plan.version) (\(plan.build)) from \(plan.projectRoot.path)")
         if plan.rehearsal { log("Rehearsal: stops after export, nothing is uploaded.", .warning) }
 
-        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.cloud != nil ? [
+        let order: [(StepID, (inout Context) async throws -> StepState)] = plan.cloud?.target == .android ? [
+            (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.playRelease, releaseToPlay),
+        ] : plan.cloud != nil ? [
             (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.processing, waitForProcessing), (.notes, writeNotes),
             (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
         ] : plan.platform == .ios ? [
@@ -579,17 +586,26 @@ public final class ReleaseRun: Identifiable {
         guard let cloud = plan.cloud, let github else { throw ReleaseError.precondition("No GitHub repository for this project") }
         let who = try await github.login()
         log("GitHub \(cloud.repo.fullName) as \(who), project folder \(cloud.repo.projectDir)")
-        detail(.prepare, "Checking App Store Connect")
-        let existing = try await client.builds(appID: plan.app.id, limit: 5, number: "\(plan.build)", version: plan.version)
-        if !existing.isEmpty {
-            throw ReleaseError.precondition("Build \(plan.version) (\(plan.build)) is already on App Store Connect. Pick a higher build number.")
+        if cloud.target == .ios {
+            detail(.prepare, "Checking App Store Connect")
+            let existing = try await client.builds(appID: plan.app.id, limit: 5, number: "\(plan.build)", version: plan.version)
+            if !existing.isEmpty {
+                throw ReleaseError.precondition("Build \(plan.version) (\(plan.build)) is already on App Store Connect. Pick a higher build number.")
+            }
+        } else if let play {
+            detail(.prepare, "Checking Play")
+            let highest = try await play.overview(package: plan.app.bundleID).tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0
+            log("Highest version code on Play: \(highest)")
+            if plan.build <= highest, !plan.rehearsal {
+                throw ReleaseError.precondition("Version code \(plan.build) is not above Play's highest (\(highest)).")
+            }
         }
         detail(.prepare, "Checking the workflow")
-        guard try await github.hasWorkflow(cloud.repo) else {
-            throw ReleaseError.precondition("\(GitHubClient.workflowFile) is not on \(cloud.repo.fullName)'s default branch yet. Add it from the Ship screen and push it.")
+        guard try await github.hasWorkflow(cloud.repo, file: cloud.target.workflowFile) else {
+            throw ReleaseError.precondition("\(cloud.target.workflowFile) is not on \(cloud.repo.fullName)'s default branch yet. Add it from the Ship screen and push it.")
         }
         let present = try await github.secretsPresent(cloud.repo)
-        let missing = GitHubClient.secretNames.filter { !present.contains($0) }
+        let missing = cloud.target.secretNames.filter { !present.contains($0) }
         guard missing.isEmpty else {
             throw ReleaseError.precondition("The repository has no \(missing.joined(separator: ", ")) secret yet. Set them from the Ship screen.")
         }
@@ -607,10 +623,10 @@ public final class ReleaseRun: Identifiable {
         let ref = try await github.defaultBranch(cloud.repo)
         let marker = "rd-" + String(id.uuidString.prefix(8)).lowercased()
         detail(.cloudBuild, "Starting on \(ref)")
-        log("Starting \(GitHubClient.workflowFile) on \(cloud.repo.fullName)@\(ref)\(plan.rehearsal ? " (no upload)" : "")")
-        var run = try await github.dispatch(cloud.repo, ref: ref, inputs: [
-            "version": plan.version, "build": "\(plan.build)", "upload": plan.rehearsal ? "false" : "true", "release_desk_id": marker,
-        ], marker: marker)
+        log("Starting \(cloud.target.workflowFile) on \(cloud.repo.fullName)@\(ref)\(plan.rehearsal && cloud.target == .ios ? " (no upload)" : "")")
+        var inputs = ["version": plan.version, "build": "\(plan.build)", "release_desk_id": marker]
+        if cloud.target == .ios { inputs["upload"] = plan.rehearsal ? "false" : "true" }
+        var run = try await github.dispatch(cloud.repo, file: cloud.target.workflowFile, ref: ref, inputs: inputs, marker: marker)
         cloudRunURL = URL(string: run.htmlURL)
         log("Run \(run.id): \(run.htmlURL)")
         var seen: [String: String] = [:]
@@ -648,6 +664,19 @@ public final class ReleaseRun: Identifiable {
                 for line in await github.logTail(cloud.repo, jobID: jobID, lines: 30) { log(line, .output) }
             }
             throw ReleaseError.precondition("The GitHub run ended \(run.conclusion ?? "badly"). Its log is above and on GitHub.")
+        }
+        if cloud.target == .android {
+            detail(.cloudBuild, "Downloading the app bundle")
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ReleaseDesk-aab-\(run.id)")
+            _ = try await github.downloadArtifact(cloud.repo, runID: run.id, name: CloudTarget.androidArtifact, into: dir)
+            guard let aab = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)?
+                .compactMap({ $0 as? URL }).first(where: { $0.pathExtension == "aab" }) else {
+                throw ReleaseError.precondition("The artifact has no .aab file.")
+            }
+            ipa = aab
+            let size = (try? FileManager.default.attributesOfItem(atPath: aab.path)[.size] as? Int).flatMap { $0 } ?? 0
+            log("Built on GitHub: \(aab.lastPathComponent) · \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))", .success)
+            return .done
         }
         log(plan.rehearsal ? "Built and signed on GitHub" : "Built on GitHub and uploaded to App Store Connect", .success)
         return .done

@@ -6,6 +6,9 @@ struct AppDetailView: View {
     let appID: String
     @Environment(AppModel.self) private var model
     @State private var selectedBuild: ASCBuild?
+    @State private var submitting = false
+    @State private var submissions: [ReviewSubmission] = []
+    @State private var actionError: String?
 
     var body: some View {
         if let app = model.app(appID), app.isPlay {
@@ -36,6 +39,11 @@ struct AppDetailView: View {
                 }
             }
             .sheet(item: $selectedBuild) { b in BuildSheet(app: app, build: b, groups: state.groups) }
+            .sheet(isPresented: $submitting, onDismiss: { Task { await loadSubmissions() } }) { SubmitReviewSheet(app: app) }
+            .task(id: appID) {
+                if model.pendingReview == appID { model.pendingReview = nil; submitting = true }
+                await loadSubmissions()
+            }
         } else {
             ContentUnavailableView("Loading app…", systemImage: "app.dashed")
         }
@@ -121,7 +129,25 @@ struct AppDetailView: View {
 
     private func versionsSection(_ state: AppState) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "App Store versions", symbol: "bag")
+            HStack {
+                SectionHeader(title: "App Store versions", symbol: "bag")
+                Button { submitting = true } label: { Label("Submit for review…", systemImage: "checkmark.shield") }
+                    .buttonStyle(.glass)
+            }
+            if let open = submissions.first(where: { ["WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES", "READY_FOR_REVIEW"].contains($0.state) }) {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.shield").foregroundStyle(Palette.cyan)
+                    Text("App Review").fontWeight(.medium)
+                    StatePill(raw: open.state)
+                    if let d = open.submitted { Text("sent \(d.relative)").foregroundStyle(.secondary).font(.callout) }
+                    Spacer()
+                    if open.state == "WAITING_FOR_REVIEW" || open.state == "READY_FOR_REVIEW" {
+                        Button("Cancel submission") { Task { await cancel(open) } }.buttonStyle(.glass).controlSize(.small)
+                    }
+                }
+                .card(padding: 12)
+            }
+            if let e = actionError { Label(e, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
             if state.versions.isEmpty {
                 Text(state.loading ? "Loading…" : "No App Store versions yet.").foregroundStyle(.secondary).card()
             } else {
@@ -133,6 +159,9 @@ struct AppDetailView: View {
                             Text(v.platform == "IOS" ? "iOS" : v.platform).foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
                             StatePill(raw: v.state)
                             Spacer()
+                            if v.state == "PENDING_DEVELOPER_RELEASE" {
+                                Button("Release now") { Task { await release(v) } }.buttonStyle(.glassProminent).tint(Palette.mint).controlSize(.small)
+                            }
                             if let c = v.created { Text("Created \(c.formatted(date: .abbreviated, time: .omitted))").foregroundStyle(.secondary).font(.callout) }
                         }
                         .padding(.vertical, 10)
@@ -140,10 +169,27 @@ struct AppDetailView: View {
                     }
                 }
                 .card(padding: 14)
-                Text("Submitting a version for App Review is the next slice: Release Desk will check screenshots, the privacy answers and the build before it sends anything.")
-                    .font(.caption).foregroundStyle(.tertiary)
             }
         }
+    }
+
+    private func loadSubmissions() async {
+        guard let c = try? model.client(forApp: appID) else { return }
+        submissions = (try? await c.reviewSubmissions(appID: appID)) ?? []
+    }
+
+    private func cancel(_ s: ReviewSubmission) async {
+        do {
+            try await model.client(forApp: appID).cancelReview(submissionID: s.id)
+            await loadSubmissions()
+        } catch { actionError = error.localizedDescription }
+    }
+
+    private func release(_ v: ASCVersion) async {
+        do {
+            try await model.client(forApp: appID).releaseVersion(versionID: v.id)
+            await model.refresh(appID: appID)
+        } catch { actionError = error.localizedDescription }
     }
 }
 

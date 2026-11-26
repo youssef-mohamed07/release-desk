@@ -46,8 +46,8 @@ public struct WorkflowStep: Sendable, Hashable {
 /// GitHub REST calls Release Desk needs for cloud builds. Signs in with the
 /// GitHub CLI's token (`gh auth token`) or a token saved in the Keychain.
 public actor GitHubClient {
-    public static let workflowFile = "release-desk-ios.yml"
-    public static let secretNames = ["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"]
+    public static let workflowFile = CloudTarget.ios.workflowFile
+    public static let secretNames = CloudTarget.ios.secretNames
     private var token: String?
     private let session = URLSession(configuration: .ephemeral)
 
@@ -99,9 +99,9 @@ public actor GitHubClient {
     }
 
     /// Whether the workflow is on the default branch (needed to run it).
-    public func hasWorkflow(_ repo: GitHubRepo) async throws -> Bool {
+    public func hasWorkflow(_ repo: GitHubRepo, file: String = GitHubClient.workflowFile) async throws -> Bool {
         do {
-            _ = try await send("GET", "/repos/\(repo.fullName)/actions/workflows/\(Self.workflowFile)")
+            _ = try await send("GET", "/repos/\(repo.fullName)/actions/workflows/\(file)")
             return true
         } catch let e as ReleaseError where e.httpStatus == 404 {
             return false
@@ -122,13 +122,14 @@ public actor GitHubClient {
     }
 
     /// Starts the workflow; returns once GitHub lists the run.
-    public func dispatch(_ repo: GitHubRepo, ref: String, inputs: [String: String], marker: String) async throws -> WorkflowRun {
+    public func dispatch(_ repo: GitHubRepo, file: String = GitHubClient.workflowFile, ref: String, inputs: [String: String],
+                         marker: String) async throws -> WorkflowRun {
         let started = Date()
-        try await send("POST", "/repos/\(repo.fullName)/actions/workflows/\(Self.workflowFile)/dispatches",
+        try await send("POST", "/repos/\(repo.fullName)/actions/workflows/\(file)/dispatches",
                        body: ["ref": .string(ref), "inputs": .object(inputs.mapValues { .string($0) })])
         for _ in 0..<40 {
             try await Task.sleep(for: .seconds(3))
-            let r = try await send("GET", "/repos/\(repo.fullName)/actions/workflows/\(Self.workflowFile)/runs?event=workflow_dispatch&per_page=10")
+            let r = try await send("GET", "/repos/\(repo.fullName)/actions/workflows/\(file)/runs?event=workflow_dispatch&per_page=10")
             if let run = r["workflow_runs"].array.first(where: { ($0["display_title"].string ?? "").contains(marker) }) {
                 return Self.run(run)
             }
@@ -162,6 +163,26 @@ public actor GitHubClient {
         })
     }
 
+    /// Downloads a run's artifact zip and unpacks it; returns the folder.
+    public func downloadArtifact(_ repo: GitHubRepo, runID: Int, name: String, into dir: URL) async throws -> URL {
+        let list = try await send("GET", "/repos/\(repo.fullName)/actions/runs/\(runID)/artifacts")
+        guard let artifact = list["artifacts"].array.first(where: { $0["name"].string == name }),
+              let url = artifact["archive_download_url"].string else {
+            throw ReleaseError.precondition("The run has no \(name) artifact.")
+        }
+        var req = URLRequest(url: URL(string: url)!)
+        req.setValue("Bearer \(try await authToken())", forHTTPHeaderField: "Authorization")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (file, response) = try await session.download(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ReleaseError.precondition("GitHub did not send the artifact.") }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let zip = dir.appendingPathComponent("\(name).zip")
+        try? FileManager.default.removeItem(at: zip)
+        try FileManager.default.moveItem(at: file, to: zip)
+        _ = try await Shell.capture("/usr/bin/ditto", ["-x", "-k", zip.path, dir.path])
+        return dir
+    }
+
     public func cancel(_ repo: GitHubRepo, runID: Int) async {
         _ = try? await send("POST", "/repos/\(repo.fullName)/actions/runs/\(runID)/cancel")
     }
@@ -172,10 +193,120 @@ public actor GitHubClient {
     }
 }
 
+/// The two cloud builds Release Desk can run on GitHub Actions.
+public enum CloudTarget: String, Sendable, Codable {
+    case ios, android
+
+    public var workflowFile: String { self == .ios ? "release-desk-ios.yml" : "release-desk-android.yml" }
+
+    public var secretNames: [String] {
+        switch self {
+        case .ios: ["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"]
+        case .android: ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"]
+        }
+    }
+
+    /// The artifact the Android workflow leaves for Release Desk to upload to Play.
+    public static let androidArtifact = "release-desk-aab"
+
+    public func yaml(projectDir: String, recipe: IOSRecipe, teamID: String?, flutterVersion: String?) -> String {
+        switch self {
+        case .ios: CloudWorkflow.yaml(projectDir: projectDir, recipe: recipe, teamID: teamID, flutterVersion: flutterVersion)
+        case .android: CloudWorkflow.androidYAML(projectDir: projectDir, flutterVersion: flutterVersion)
+        }
+    }
+}
+
 /// The workflow Release Desk adds to a project: it builds the iOS app on a
 /// GitHub macOS runner the same way the local pipeline does, and uploads it.
 /// Release Desk then does the TestFlight steps through the API.
 public enum CloudWorkflow {
+    /// Builds a signed app bundle on a GitHub Linux runner and leaves it as an
+    /// artifact; Release Desk downloads it and releases it on Play itself, so
+    /// no Google credential goes to GitHub.
+    public static func androidYAML(projectDir: String, flutterVersion: String?) -> String {
+        let flutter = flutterVersion.map { "          flutter-version: \($0)" } ?? "          channel: stable"
+        return """
+        # Written by Release Desk. Builds the Android app bundle on a GitHub runner,
+        # signed with your upload key, and keeps it as the release-desk-aab artifact.
+        # Release Desk downloads it and releases it on Google Play.
+        # Needs the repository secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+        # ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD.
+        name: Release Desk Android
+        run-name: Release Desk Android ${{ inputs.version }} (${{ inputs.build }}) ${{ inputs.release_desk_id }}
+
+        on:
+          workflow_dispatch:
+            inputs:
+              version:
+                description: Version name
+                required: true
+              build:
+                description: Version code
+                required: true
+              release_desk_id:
+                description: Set by Release Desk to find this run
+                required: false
+                default: ""
+
+        jobs:
+          android:
+            runs-on: ubuntu-latest
+            timeout-minutes: 45
+            defaults:
+              run:
+                working-directory: \(projectDir)
+            steps:
+              - name: Check out
+                uses: actions/checkout@v4
+
+              - name: Set up Java
+                uses: actions/setup-java@v4
+                with:
+                  distribution: temurin
+                  java-version: "17"
+
+              - name: Set up Flutter
+                uses: subosito/flutter-action@v2
+                with:
+        \(flutter)
+                  cache: true
+
+              - name: Upload key
+                env:
+                  KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+                  STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+                  KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+                  KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+                run: |
+                  printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+                  {
+                    echo "storeFile=$RUNNER_TEMP/upload.jks"
+                    echo "storePassword=$STORE_PASSWORD"
+                    echo "keyAlias=$KEY_ALIAS"
+                    echo "keyPassword=$KEY_PASSWORD"
+                  } > android/key.properties
+
+              - name: Build app bundle
+                run: flutter build appbundle --release --build-name "${{ inputs.version }}" --build-number "${{ inputs.build }}"
+
+              - name: Check signing
+                run: keytool -printcert -jarfile build/app/outputs/bundle/release/app-release.aab | head -6
+
+              - name: Keep the bundle
+                uses: actions/upload-artifact@v4
+                with:
+                  name: release-desk-aab
+                  path: \(projectDir == "." ? "" : projectDir + "/")build/app/outputs/bundle/release/app-release.aab
+                  retention-days: 3
+
+              - name: Remove the key
+                if: always()
+                run: rm -f "$RUNNER_TEMP/upload.jks" android/key.properties
+
+        """
+    }
+
     public static func yaml(projectDir: String, recipe: IOSRecipe, teamID: String?, flutterVersion: String?) -> String {
         let flutter = flutterVersion.map { "          flutter-version: \($0)" } ?? "          channel: stable"
         return """

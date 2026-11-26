@@ -182,14 +182,7 @@ struct ShipComposer: View {
     // Build on GitHub Actions
     @State private var onGitHub = false
     @State private var repo: GitHubRepo?
-    @State private var ghUser: String?
-    @State private var ghWorkflow: Bool?
-    @State private var ghSecrets: Set<String>?
-    @State private var ghError: String?
-    @State private var ghBusy = false
-    @State private var wroteWorkflow: URL?
-    @State private var confirmSecrets = false
-    @State private var flutterVersion: String?
+    @State private var cloudReady = false
 
     private var state: AppState { model.apps[app.id] ?? AppState() }
     private var latest: ASCBuild? { state.builds.first }
@@ -208,7 +201,7 @@ struct ShipComposer: View {
                     HStack(alignment: .top, spacing: 20) {
                         VStack(spacing: 20) {
                             releaseCard
-                            buildOnCard
+                            CloudBuildCard(app: app, link: link, target: .ios, onGitHub: $onGitHub, repo: $repo, ready: $cloudReady)
                             testersCard
                             optionsCard
                         }
@@ -337,141 +330,6 @@ struct ShipComposer: View {
             }
         }
         .card()
-    }
-
-    private var cloudReady: Bool {
-        ghUser != nil && ghWorkflow == true && (ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? false)
-    }
-
-    private var buildOnCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Build on", systemImage: "hammer").font(.headline)
-                Spacer()
-                Picker("Build on", selection: $onGitHub.animation(.snappy)) {
-                    Text("This Mac").tag(false)
-                    Text("GitHub Actions").tag(true)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-            }
-            if onGitHub {
-                if ghBusy && repo == nil {
-                    HStack { ProgressView().controlSize(.small); Text("Looking at the repository…").foregroundStyle(.secondary) }
-                } else if let repo {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left.forwardslash.chevron.right").foregroundStyle(.secondary)
-                        Text(repo.fullName).font(.callout.monospaced()).sensitive()
-                        Text("· \(repo.projectDir)").font(.callout.monospaced()).foregroundStyle(.secondary).sensitive()
-                        Spacer()
-                        Link(destination: repo.actionsURL) { Image(systemName: "arrow.up.right.square") }.help("Open Actions on GitHub")
-                    }
-                    checkRow(ok: ghUser != nil, title: ghUser.map { "Signed in to GitHub as \($0)" } ?? "Sign in to GitHub",
-                             hint: ghUser == nil ? "Run gh auth login in Terminal, then check again." : nil, sensitiveTitle: ghUser != nil) { EmptyView() }
-                    checkRow(ok: ghWorkflow == true, title: "Workflow on the default branch",
-                             hint: wroteWorkflow != nil && ghWorkflow != true ? "Added to the project. Commit and push it, then check again." : nil) {
-                        if ghWorkflow != true {
-                            Button(wroteWorkflow == nil ? "Add to project" : "Show file") {
-                                if let f = wroteWorkflow { NSWorkspace.shared.activateFileViewerSelecting([f]) } else { writeWorkflow() }
-                            }
-                            .buttonStyle(.glass).controlSize(.small)
-                        }
-                    }
-                    checkRow(ok: ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? false,
-                             title: "Secrets ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY",
-                             hint: ghSecrets.map { s in GitHubClient.secretNames.filter { !s.contains($0) } }.flatMap { $0.isEmpty ? nil : "Missing: \($0.joined(separator: ", "))" }) {
-                        if !(ghSecrets.map { s in GitHubClient.secretNames.allSatisfy(s.contains) } ?? true) {
-                            Button("Set from this team's key") { confirmSecrets = true }
-                                .buttonStyle(.glass).controlSize(.small)
-                        }
-                    }
-                    HStack {
-                        Text("A GitHub macOS runner archives, signs and uploads; this Mac does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button { Task { await checkGitHub() } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.borderless).help("Check again").disabled(ghBusy)
-                    }
-                } else {
-                    Text(ghError ?? "This project has no GitHub remote (origin).").font(.callout).foregroundStyle(.secondary)
-                }
-                if let ghError, repo != nil { Label(ghError, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange) }
-            } else {
-                Text("Xcode and Flutter on this Mac archive, sign and upload.").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .card()
-        .onChange(of: onGitHub) {
-            model.updateRecipe(appID: app.id) { $0.buildOn = onGitHub ? "github" : nil }
-            if onGitHub && repo == nil { Task { await checkGitHub() } }
-        }
-        .alert("Set the repository's secrets?", isPresented: $confirmSecrets) {
-            Button("Set secrets") { Task { await setSecrets() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Release Desk puts this team's App Store Connect key into \(privacy ? "the repository" : repo?.fullName ?? "the repository")'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key.")
-        }
-    }
-
-    @ViewBuilder
-    private func checkRow<Accessory: View>(ok: Bool, title: String, hint: String?, sensitiveTitle: Bool = false,
-                                           @ViewBuilder accessory: () -> Accessory) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(ok ? Palette.mint : .secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout).sensitive(sensitiveTitle ? 5 : 0)
-                if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
-            }
-            Spacer()
-            accessory()
-        }
-    }
-
-    private func checkGitHub() async {
-        ghBusy = true
-        ghError = nil
-        defer { ghBusy = false }
-        if repo == nil { repo = await GitHubRepo.detect(link.url) }
-        guard let repo else { return }
-        do {
-            ghUser = try await model.github.login()
-            ghWorkflow = try await model.github.hasWorkflow(repo)
-            ghSecrets = try await model.github.secretsPresent(repo)
-        } catch {
-            ghError = error.localizedDescription
-        }
-        if flutterVersion == nil, let out = try? await Shell.capture("flutter", ["--version", "--machine"], cwd: link.url),
-           let start = out.firstIndex(of: "{"), let json = try? JSONDecoder().decode(JSONValue.self, from: Data(out[start...].utf8)) {
-            flutterVersion = json["frameworkVersion"].string
-        }
-    }
-
-    private func writeWorkflow() {
-        guard let repo else { return }
-        var root = link.url
-        if repo.projectDir != "." { for _ in repo.projectDir.split(separator: "/") { root.deleteLastPathComponent() } }
-        let file = root.appendingPathComponent(".github/workflows/\(GitHubClient.workflowFile)")
-        let yaml = CloudWorkflow.yaml(projectDir: repo.projectDir, recipe: link.recipe,
-                                      teamID: model.team(ofApp: app.id)?.teamID, flutterVersion: flutterVersion)
-        do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try yaml.write(to: file, atomically: true, encoding: .utf8)
-            wroteWorkflow = file
-        } catch {
-            ghError = error.localizedDescription
-        }
-    }
-
-    private func setSecrets() async {
-        guard let repo else { return }
-        ghBusy = true
-        defer { ghBusy = false }
-        do {
-            try await model.setCloudSecrets(appID: app.id, repo: repo)
-            ghSecrets = try await model.github.secretsPresent(repo)
-        } catch {
-            ghError = error.localizedDescription
-        }
     }
 
     private var optionsCard: some View {
@@ -651,7 +509,7 @@ struct ShipComposer: View {
                                teamID: model.team(ofApp: app.id)?.teamID, groups: ordered,
                                whatsNew: notes.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
                                submitForReview: submitForReview, rehearsal: rehearsal)
-        if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo) }
+        if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo, target: .ios) }
         do {
             _ = try model.launch(plan)
             if !rehearsal { Drafts.clear(for: app.id) }

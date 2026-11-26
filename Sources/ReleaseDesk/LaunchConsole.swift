@@ -109,6 +109,12 @@ struct LaunchConsole: View {
                     }
                     .buttonStyle(.glass).controlSize(.large)
                 }
+                if run.phase == .succeeded, run.plan.platform == .ios, !run.plan.rehearsal {
+                    Button { model.route = .app(run.plan.app.id); model.pendingReview = run.plan.app.id } label: {
+                        Label("Submit to App Store…", systemImage: "checkmark.shield")
+                    }
+                    .buttonStyle(.glass).controlSize(.large)
+                }
                 Button(action: onNew) { Label("New release", systemImage: "plus") }
                     .buttonStyle(.glassProminent).controlSize(.large)
             }

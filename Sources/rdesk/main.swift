@@ -23,7 +23,8 @@ guard let command = args.first else {
 }
 // The GitHub Actions workflow for cloud builds: rdesk workflow [--dir mobile] [--team TEAMID] [--flutter 3.x]
 if command == "workflow" {
-    print(CloudWorkflow.yaml(projectDir: option("--dir") ?? ".", recipe: IOSRecipe(), teamID: option("--team"), flutterVersion: option("--flutter")))
+    let target: CloudTarget = args.contains("--android") ? .android : .ios
+    print(target.yaml(projectDir: option("--dir") ?? ".", recipe: IOSRecipe(), teamID: option("--team"), flutterVersion: option("--flutter")))
     exit(0)
 }
 
@@ -74,6 +75,18 @@ do {
         for g in try await client.betaGroups(appID: app) {
             print("\(g.id)\t\(g.isInternal ? "internal" : "external")\t\(g.testerCount.map(String.init) ?? "?") testers\t\(g.name)\t\(g.publicLink ?? "")")
         }
+    case "bundle":
+        guard let bundle = option("--bundle") else { fail("--bundle is required") }
+        let registered = try await client.bundleID(bundle)
+        let app = try await client.app(bundleID: bundle)
+        print("bundle id registered: \(registered != nil) · app record: \(app.map { "\($0.name) (\($0.id))" } ?? "none")")
+    case "readiness":
+        guard let app = option("--app") else { fail("--app is required") }
+        let versions = try await client.versions(appID: app)
+        guard let v = versions.first(where: { editableVersionStates.contains($0.state) }) else { fail("No editable App Store version") }
+        let r = try await client.readiness(appID: app, versionID: v.id, buildID: nil)
+        print("Version \(v.version) (\(v.state)) · shipped before: \(r.hasShipped)")
+        for i in r.items { print("\(i.ok ? "✓" : "✗") \(i.title)\(i.detail.map { " — \($0)" } ?? "")") }
     case "versions":
         guard let app = option("--app") else { fail("--app is required") }
         for v in try await client.versions(appID: app) { print("\(v.version)\t\(v.platform)\t\(v.state)") }

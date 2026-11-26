@@ -50,6 +50,10 @@ struct Sidebar: View {
             }
 
             Section("Connect") {
+                Button { model.newApp = true } label: {
+                    Label { Text("New app…") } icon: { Image(systemName: "sparkles") }
+                }
+                .buttonStyle(.plain)
                 Button { model.connecting = .apple } label: {
                     Label { Text("App Store Connect") } icon: { Image(systemName: "apple.logo") }
                 }

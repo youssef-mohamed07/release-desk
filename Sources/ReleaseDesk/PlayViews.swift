@@ -274,6 +274,9 @@ struct PlayShipComposer: View {
     @State private var confirming = false
     @State private var launchError: String?
     @State private var ready = false
+    @State private var onGitHub = false
+    @State private var repo: GitHubRepo?
+    @State private var cloudReady = false
 
     private var state: AppState { model.apps[app.id] ?? AppState() }
     private var highest: Int { state.tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0 }
@@ -308,13 +311,14 @@ struct PlayShipComposer: View {
                     if let e = state.error, let team = model.team(ofApp: app.id) {
                         AccessCard(message: e, team: team) { Task { await model.refresh(appID: app.id) } }
                     }
-                    if let p = project, !p.hasUploadKey {
+                    if let p = project, !p.hasUploadKey, !onGitHub {
                         Label("This project has no android/key.properties, so release builds are signed with the debug key and Play refuses them. A rehearsal still works.",
                               systemImage: "key.slash").foregroundStyle(StateTone.waiting.color).card()
                     }
                     HStack(alignment: .top, spacing: 20) {
                         VStack(spacing: 20) {
                             releaseCard
+                            CloudBuildCard(app: app, link: link, target: .android, onGitHub: $onGitHub, repo: $repo, ready: $cloudReady)
                             trackCard
                             optionsCard
                         }
@@ -341,7 +345,8 @@ struct PlayShipComposer: View {
                 .buttonStyle(.glassProminent)
                 .tint(rehearsal ? Palette.violet : Color(red: 0.0, green: 0.62, blue: 0.45))
                 .controlSize(.extraLarge)
-                .disabled(!ready || version.isEmpty || model.activeRun(for: app.id) != nil || (!rehearsal && build <= highest))
+                .disabled(!ready || version.isEmpty || model.activeRun(for: app.id) != nil || (!rehearsal && build <= highest)
+                          || (onGitHub && !cloudReady))
                 .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(.horizontal, 22).padding(.vertical, 14)
@@ -478,6 +483,7 @@ struct PlayShipComposer: View {
         track = link.recipe.playTrack ?? "internal"
         status = link.recipe.playStatus ?? "completed"
         notes = Drafts.load(for: app.id)
+        onGitHub = link.recipe.androidBuildOn == "github"
         ready = true
     }
 
@@ -495,6 +501,7 @@ struct PlayShipComposer: View {
                                submitForReview: false, rehearsal: rehearsal)
         plan.platform = .android
         plan.play = PlayTarget(track: track, status: status, userFraction: status == "inProgress" ? rollout : nil)
+        if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo, target: .android) }
         do {
             _ = try model.launch(plan)
             if !rehearsal { Drafts.clear(for: app.id) }

@@ -19,6 +19,7 @@ struct ReleaseDeskApp: App {
         .defaultSize(width: 1380, height: 880)
         .commands {
             CommandGroup(after: .newItem) {
+                Button("New App…") { model.newApp = true }.keyboardShortcut("n")
                 Button("Go to…") { model.palette.toggle() }.keyboardShortcut("k")
                 Divider()
                 Button("Connect App Store Connect…") { model.connecting = .apple }
@@ -84,6 +85,7 @@ struct RootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .sheet(isPresented: $model.newApp) { NewAppWizard().environment(\.privacyMode, model.privacy) }
         .sheet(item: $model.connecting) { provider in
             ConnectSheet(provider: provider).environment(\.privacyMode, model.privacy)
         }

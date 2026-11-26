@@ -46,6 +46,9 @@ final class AppModel {
     @ObservationIgnored private var playClients: [UUID: PlayClient] = [:]
     @ObservationIgnored let github = GitHubClient()
     var palette = false
+    var newApp = false
+    /// An app whose page should open the App Review sheet.
+    var pendingReview: String?
     var privacy: Bool = UserDefaults.standard.bool(forKey: "privacyMode") {
         didSet { UserDefaults.standard.set(privacy, forKey: "privacyMode") }
     }
@@ -390,7 +393,7 @@ final class AppModel {
         let run: ReleaseRun
         if plan.platform == .android {
             guard let team = team(ofApp: plan.app.id) else { throw ReleaseError.precondition("No Play account for this app") }
-            run = ReleaseRun(plan: plan, play: try playClient(for: team))
+            run = ReleaseRun(plan: plan, play: try playClient(for: team), github: plan.cloud != nil ? github : nil)
         } else {
             run = ReleaseRun(plan: plan, apple: try client(forApp: plan.app.id), github: plan.cloud != nil ? github : nil)
         }
@@ -403,7 +406,33 @@ final class AppModel {
 
     /// Puts the team's App Store Connect key into the repository's Actions
     /// secrets, so the cloud workflow can sign and upload.
-    func setCloudSecrets(appID: String, repo: GitHubRepo) async throws {
+    func setCloudSecrets(appID: String, repo: GitHubRepo, target: CloudTarget = .ios, projectRoot: URL? = nil) async throws {
+        if target == .android {
+            // The upload key from android/key.properties, as the workflow expects it.
+            guard let root = projectRoot else { throw ReleaseError.precondition("No project folder") }
+            let android = root.appendingPathComponent("android")
+            guard let text = try? String(contentsOf: android.appendingPathComponent("key.properties"), encoding: .utf8) else {
+                throw ReleaseError.precondition("This project has no android/key.properties with its upload key.")
+            }
+            var props: [String: String] = [:]
+            for line in text.split(separator: "\n") {
+                let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                if parts.count == 2, !parts[0].hasPrefix("#") { props[parts[0]] = parts[1] }
+            }
+            guard let store = props["storeFile"], let storePass = props["storePassword"], let alias = props["keyAlias"],
+                  let keyPass = props["keyPassword"] else {
+                throw ReleaseError.precondition("android/key.properties needs storeFile, storePassword, keyAlias and keyPassword.")
+            }
+            // Gradle resolves a relative storeFile from android/app.
+            let expanded = NSString(string: store).expandingTildeInPath
+            let file = expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : android.appendingPathComponent("app").appendingPathComponent(expanded)
+            guard let keystore = try? Data(contentsOf: file) else { throw ReleaseError.precondition("Cannot read the keystore at \(file.path)") }
+            try await github.setSecret("ANDROID_KEYSTORE_BASE64", value: keystore.base64EncodedString(), repo: repo)
+            try await github.setSecret("ANDROID_KEYSTORE_PASSWORD", value: storePass, repo: repo)
+            try await github.setSecret("ANDROID_KEY_ALIAS", value: alias, repo: repo)
+            try await github.setSecret("ANDROID_KEY_PASSWORD", value: keyPass, repo: repo)
+            return
+        }
         guard let team = team(ofApp: appID), case .appStoreConnectKey(let keyID, let issuer) = team.credential else {
             throw ReleaseError.precondition("This app has no App Store Connect key")
         }

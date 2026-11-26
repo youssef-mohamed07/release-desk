@@ -23,3 +23,12 @@ import Testing
     #expect(repo?.fullName == "Some-Org/some-app")
     #expect(repo?.projectDir == "mobile")
 }
+
+@Test func androidWorkflowLeavesTheBundle() {
+    let y = CloudTarget.android.yaml(projectDir: "mobile", recipe: IOSRecipe(), teamID: nil, flutterVersion: nil)
+    #expect(y.contains("runs-on: ubuntu-latest"))
+    #expect(y.contains("name: release-desk-aab"))
+    #expect(y.contains("path: mobile/build/app/outputs/bundle/release/app-release.aab"))
+    for s in CloudTarget.android.secretNames { #expect(y.contains("secrets.\(s)")) }
+    #expect(y.contains("channel: stable"))
+}
