@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 import 'package:release_desk/src/core/asc.dart';
 import 'package:release_desk/src/core/asc_key.dart';
@@ -13,6 +15,7 @@ import 'package:release_desk/src/core/github.dart';
 import 'package:release_desk/src/core/google.dart';
 import 'package:release_desk/src/core/json.dart';
 import 'package:release_desk/src/core/release_run.dart';
+import 'package:release_desk/src/core/store_languages.dart';
 import 'package:release_desk/src/core/workspace.dart';
 
 // A throwaway P-256 key made for these tests with
@@ -26,6 +29,15 @@ DAVaAUO+Ciu4/YNAgNYA3h3KkzUGFdHT96M9RH5gjEnbXF7So7RL0+cP
 Uint8List _der(String pem) => base64.decode(pem.split('\n').where((l) => !l.startsWith('-----')).join());
 
 BigInt _big(List<int> b) => b.fold(BigInt.zero, (r, x) => (r << 8) | BigInt.from(x));
+
+/// An App Store Connect client whose requests land in [sent] and get [reply]'s answer.
+AscClient _fakeAsc(List<http.Request> sent, Object? Function(http.Request) reply) => AscClient(
+  AscKey(keyId: 'ABC123DEFG', issuerId: '00000000-0000-0000-0000-000000000000', pem: testPem),
+  client: MockClient((req) async {
+    sent.add(req);
+    return http.Response(jsonEncode(reply(req)), req.method == 'POST' ? 201 : 200, headers: {'content-type': 'application/json; charset=utf-8'});
+  }),
+);
 
 void main() {
   group('App Store Connect ES256', () {
@@ -75,6 +87,142 @@ void main() {
     test('refuses files that are not a P-256 private key', () {
       expect(() => AscKey.parsePrivateKey('not a key'), throwsA(isA<ReleaseError>()));
       expect(() => AscKey.parsePrivateKey('-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'), throwsA(isA<ReleaseError>()));
+    });
+  });
+
+  group("App Store What's New", () {
+    test('updates the languages the version has and adds the others', () async {
+      final sent = <http.Request>[];
+      final asc = _fakeAsc(
+        sent,
+        (r) => r.method == 'GET'
+            ? {
+                'data': [
+                  {
+                    'type': 'appStoreVersionLocalizations',
+                    'id': 'loc-en',
+                    'attributes': {'locale': 'en-US'},
+                  },
+                ],
+              }
+            : {
+                'data': {'type': 'appStoreVersionLocalizations', 'id': 'loc-new'},
+              },
+      );
+      final lines = await asc.writeWhatsNew('v1', {'en-US': 'Faster search.', 'ar-SA': 'بحث أسرع.', 'fr-FR': '  '});
+      expect(lines, ['ar-SA: added the language', 'en-US: updated']);
+      expect(sent.map((r) => '${r.method} ${r.url.path}'), [
+        'GET /v1/appStoreVersions/v1/appStoreVersionLocalizations',
+        'POST /v1/appStoreVersionLocalizations',
+        'PATCH /v1/appStoreVersionLocalizations/loc-en',
+      ]);
+      expect(jsonDecode(sent[1].body), {
+        'data': {
+          'type': 'appStoreVersionLocalizations',
+          'attributes': {'locale': 'ar-SA', 'whatsNew': 'بحث أسرع.'},
+          'relationships': {
+            'appStoreVersion': {
+              'data': {'type': 'appStoreVersions', 'id': 'v1'},
+            },
+          },
+        },
+      });
+      expect(jsonDecode(sent[2].body), {
+        'data': {
+          'type': 'appStoreVersionLocalizations',
+          'id': 'loc-en',
+          'attributes': {'whatsNew': 'Faster search.'},
+        },
+      });
+    });
+
+    test("a language added without text leaves What's New out", () async {
+      final sent = <http.Request>[];
+      final asc = _fakeAsc(
+        sent,
+        (_) => {
+          'data': {'type': 'appStoreVersionLocalizations', 'id': 'loc-de'},
+        },
+      );
+      expect(await asc.addLocalization('v1', 'de-DE'), 'loc-de');
+      await asc.addLocalization('v1', 'de-DE', whatsNew: '');
+      for (final r in sent) {
+        expect((jsonDecode(r.body) as Map)['data']['attributes'], {'locale': 'de-DE'});
+      }
+    });
+
+    test('uses the editable version with that number, or makes one', () async {
+      final sent = <http.Request>[];
+      var editable = false;
+      final asc = _fakeAsc(
+        sent,
+        (r) => r.method == 'GET'
+            ? {
+                'data': [
+                  {
+                    'type': 'appStoreVersions',
+                    'id': 'v-old',
+                    'attributes': {
+                      'versionString': '2.4.0',
+                      'platform': 'IOS',
+                      'appVersionState': editable ? 'PREPARE_FOR_SUBMISSION' : 'READY_FOR_DISTRIBUTION',
+                    },
+                  },
+                ],
+              }
+            : {
+                'data': {
+                  'type': 'appStoreVersions',
+                  'id': 'v-new',
+                  'attributes': {'versionString': '2.4.0', 'appVersionState': 'PREPARE_FOR_SUBMISSION'},
+                },
+              },
+      );
+      final made = await asc.editableVersion('1001', '2.4.0');
+      expect((made.version.id, made.created), ('v-new', true));
+      expect(jsonDecode(sent.last.body), {
+        'data': {
+          'type': 'appStoreVersions',
+          'attributes': {'platform': 'IOS', 'versionString': '2.4.0'},
+          'relationships': {
+            'app': {
+              'data': {'type': 'apps', 'id': '1001'},
+            },
+          },
+        },
+      });
+      editable = true;
+      sent.clear();
+      final found = await asc.editableVersion('1001', '2.4.0');
+      expect((found.version.id, found.created), ('v-old', false));
+      expect(sent.map((r) => r.method), ['GET']);
+    });
+  });
+
+  group('Store languages', () {
+    test('have English names and a direction', () {
+      expect(StoreLanguages.name('ar-SA'), 'Arabic (Saudi Arabia)');
+      expect(StoreLanguages.name('ar'), 'Arabic');
+      expect(StoreLanguages.name('iw-IL'), 'Hebrew (Israel)');
+      expect(StoreLanguages.name('fil'), 'Filipino (Philippines)');
+      expect(StoreLanguages.name('zh-Hans'), 'Chinese, Simplified');
+      expect(StoreLanguages.name('es-419'), 'Spanish (Latin America)');
+      expect(StoreLanguages.name('xx-YY'), 'xx-YY');
+      for (final code in [...StoreLanguages.appStore, ...StoreLanguages.play]) {
+        expect(StoreLanguages.name(code), allOf(isNot(code), isNot(matches(RegExp(r'\((\d+|[A-Z]{2})\)')))), reason: code);
+      }
+      for (final rtl in ['ar', 'ar-SA', 'he', 'iw-IL', 'fa', 'ur']) {
+        expect(StoreLanguages.isRightToLeft(rtl), isTrue, reason: rtl);
+      }
+      for (final ltr in ['fr-FR', 'en-US', 'am', 'hr', 'ARx', 'arx']) {
+        expect(StoreLanguages.isRightToLeft(ltr), isFalse, reason: ltr);
+      }
+      expect(StoreLanguages.appStore.toSet(), hasLength(StoreLanguages.appStore.length));
+      expect(StoreLanguages.play.toSet(), hasLength(StoreLanguages.play.length));
+    });
+
+    test('only chosen languages with text are sent', () {
+      expect(notesIn({'en-US': 'Hi', 'ar-SA': '  ', 'fr-FR': 'Salut'}, ['en-US', 'ar-SA']), {'en-US': 'Hi'});
     });
   });
 
@@ -232,6 +380,25 @@ void main() {
       expect(back.accounts.last.teams.first.packages, ['com.example.app']);
       expect(back.link('123')?.recipe.locales, ['ar-SA', 'en-US']);
     });
+
+    test('recipes written before the language fields still load', () {
+      const json =
+          '{"exportOptions":"ios/ExportOptions.plist","entitlements":"ios/Runner/Runner.entitlements","writeBuildNumber":true,'
+          '"groupIDs":[],"submitForReview":true,"locales":["ar-SA","en-US"],"androidBuildOn":null,"playTrack":null,"playStatus":null}';
+      final r = Recipe.fromJson((jsonDecode(json) as Map).cast<String, Object?>());
+      expect(r.appStoreLocales, isNull);
+      expect(r.playLocales, isNull);
+      expect(r.locales, ['ar-SA', 'en-US']);
+      expect(r.appStoreLocalesOrDefault, ['ar-SA', 'en-US']);
+      expect(r.playLocalesOrDefault, ['en-US', 'ar']);
+      final c =
+          (r
+                ..appStoreLocales = ['en-US']
+                ..playLocales = ['en-US', 'fr-FR'])
+              .copy();
+      expect(c.appStoreLocales, ['en-US']);
+      expect(c.playLocales, ['en-US', 'fr-FR']);
+    });
   });
 
   group('Pipeline', () {
@@ -240,6 +407,24 @@ void main() {
       expect(StepId.stepsFor(ReleasePlatform.ios)[1], StepId.cloudBuild);
       expect(StepId.stepsFor(ReleasePlatform.android), [StepId.prepare, StepId.bundle, StepId.checkSigning, StepId.playRelease]);
       expect(StepId.stepsFor(ReleasePlatform.android, cloud: true), [StepId.prepare, StepId.cloudBuild, StepId.playRelease]);
+    });
+
+    test("iOS writes App Store What's New after What to Test", () {
+      expect(StepId.stepsFor(ReleasePlatform.ios), [
+        StepId.prepare,
+        StepId.cloudBuild,
+        StepId.processing,
+        StepId.notes,
+        StepId.storeNotes,
+        StepId.groups,
+        StepId.review,
+        StepId.live,
+      ]);
+      expect(StepId.stepsFor(ReleasePlatform.ios, cloud: true), StepId.stepsFor(ReleasePlatform.ios));
+      expect(StepId.storeNotes.title, "App Store What's New");
+      for (final cloud in [false, true]) {
+        expect(StepId.stepsFor(ReleasePlatform.android, cloud: cloud), isNot(contains(StepId.storeNotes)));
+      }
     });
 
     test("Apple's states read as words", () {

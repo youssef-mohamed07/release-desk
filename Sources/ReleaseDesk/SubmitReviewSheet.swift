@@ -88,18 +88,31 @@ struct SubmitReviewSheet: View {
                     Text("Manually, when I say").tag(false)
                 }
             }
-            if let r = readiness, r.hasShipped, !r.localizations.isEmpty {
-                Section("What's New") {
-                    ForEach(r.localizations) { l in
-                        let rtl = l.locale.hasPrefix("ar")
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(Locale.current.localizedString(forIdentifier: l.locale) ?? l.locale).font(.caption.weight(.semibold))
-                            TextEditor(text: Binding(get: { whatsNew[l.id] ?? l.whatsNew }, set: { whatsNew[l.id] = $0 }))
-                                .frame(minHeight: 70)
-                                .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
-                                .sensitive(5)
+            if let r = readiness, versionID != nil {
+                Section {
+                    if r.hasShipped {
+                        ForEach(r.localizations) { l in
+                            let rtl = StoreLanguages.isRightToLeft(l.locale)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(StoreLanguages.name(l.locale))  ·  \(l.locale)").font(.caption.weight(.semibold))
+                                TextEditor(text: Binding(get: { whatsNew[l.id] ?? l.whatsNew }, set: { whatsNew[l.id] = $0 }))
+                                    .frame(minHeight: 70)
+                                    .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
+                                    .sensitive(5)
+                            }
                         }
                     }
+                    HStack {
+                        Text("A new language also needs its description, keywords, support URL and screenshots in App Store Connect.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        LanguageMenu(available: StoreLanguages.appStore.filter { code in !r.localizations.contains { $0.locale == code } }) { code in
+                            Task { await addLanguage(code) }
+                        }
+                        .disabled(checking || submitting)
+                    }
+                } header: {
+                    Text(r.hasShipped ? "What's New" : "Languages")
                 }
             }
             Section {
@@ -192,6 +205,17 @@ struct SubmitReviewSheet: View {
         }
         buildID = builds.first { normalized($0.version) == normalized(versionString) }?.id
         await check()
+    }
+
+    /// Adds a language to the chosen version, then reads it again.
+    private func addLanguage(_ code: String) async {
+        guard let versionID, let c = try? model.client(forApp: app.id) else { return }
+        do {
+            try await c.addLocalization(versionID: versionID, locale: code)
+            await check()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     private func check() async {

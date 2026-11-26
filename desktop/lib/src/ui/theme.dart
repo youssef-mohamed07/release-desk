@@ -1135,18 +1135,4 @@ String tildePath(String path) {
   return path;
 }
 
-String localeName(String id) =>
-    const {
-      'ar-SA': 'Arabic (Saudi Arabia)',
-      'ar': 'Arabic',
-      'en-US': 'English (United States)',
-      'en-GB': 'English (United Kingdom)',
-      'en': 'English',
-      'fr-FR': 'French (France)',
-      'de-DE': 'German (Germany)',
-      'es-ES': 'Spanish (Spain)',
-      'tr-TR': 'Turkish (Türkiye)',
-    }[id] ??
-    id;
-
 Future<void> copyText(String s) => Clipboard.setData(ClipboardData(text: s));

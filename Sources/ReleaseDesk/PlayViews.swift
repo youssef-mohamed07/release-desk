@@ -280,7 +280,7 @@ struct PlayShipComposer: View {
 
     private var state: AppState { model.apps[app.id] ?? AppState() }
     private var highest: Int { state.tracks.flatMap(\.releases).map(\.maxCode).max() ?? 0 }
-    private var locales: [String] { ["en-US", "ar"] }
+    private var locales: [String] { (model.workspace.link(for: app.id)?.recipe ?? link.recipe).playLocales ?? ["en-US", "ar"] }
     private var tracks: [(String, String)] {
         var t = [("internal", "Internal"), ("alpha", "Closed"), ("beta", "Open"), ("production", "Production")]
         for x in state.tracks where !t.contains(where: { $0.0 == x.track }) { t.append((x.track, x.title)) }
@@ -445,29 +445,10 @@ struct PlayShipComposer: View {
     }
 
     private var notesCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("What's new", systemImage: "text.bubble.fill").font(.headline)
-            ForEach(locales, id: \.self) { locale in
-                let rtl = locale.hasPrefix("ar")
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(Locale.current.localizedString(forIdentifier: locale) ?? locale).font(.caption.weight(.semibold))
-                        Text(locale).font(.caption.monospaced()).foregroundStyle(.tertiary)
-                        Spacer()
-                        Text("\((notes[locale] ?? "").count)/500").font(.caption2.monospacedDigit())
-                            .foregroundStyle((notes[locale] ?? "").count > 500 ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
-                    }
-                    TextEditor(text: Binding(get: { notes[locale] ?? "" }, set: { notes[locale] = $0 }))
-                        .font(.system(size: 13.5)).scrollContentBackground(.hidden).padding(8).frame(minHeight: 120)
-                        .sensitive(5)
-                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.2)))
-                        .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
-                }
-            }
-            Text("Play allows 500 characters per language.").font(.caption).foregroundStyle(.tertiary)
-        }
-        .card()
+        NotesEditor(title: "What's new", symbol: "text.bubble.fill", limit: 500, available: StoreLanguages.play,
+                    locales: Binding(get: { locales }, set: { v in model.updateRecipe(appID: app.id) { $0.playLocales = v } }),
+                    notes: $notes,
+                    footer: "Goes with the release on the track you choose, Production included. Play allows 500 characters per language.")
     }
 
     private func load() async {
@@ -497,7 +478,7 @@ struct PlayShipComposer: View {
         var recipe = model.workspace.link(for: app.id)?.recipe ?? link.recipe
         recipe.writeBuildNumber = writeBuildNumber
         var plan = ReleasePlan(app: app, projectRoot: project.root, version: version, build: build, recipe: recipe,
-                               teamID: nil, groups: [], whatsNew: notes.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+                               teamID: nil, groups: [], whatsNew: notes.notes(in: locales),
                                submitForReview: false, rehearsal: rehearsal)
         plan.platform = .android
         plan.play = PlayTarget(track: track, status: status, userFraction: status == "inProgress" ? rollout : nil)

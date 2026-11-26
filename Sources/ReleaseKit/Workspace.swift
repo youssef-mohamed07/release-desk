@@ -99,7 +99,12 @@ public struct IOSRecipe: Codable, Hashable, Sendable {
     public var writeBuildNumber = true
     public var groupIDs: [String] = []
     public var submitForReview = true
+    /// Languages of What to Test (TestFlight).
     public var locales = ["ar-SA", "en-US"]
+    /// Languages of the App Store version's What's New; nil means the same as `locales`.
+    public var appStoreLocales: [String]?
+    /// Languages of a Google Play release's What's new; nil means English and Arabic.
+    public var playLocales: [String]?
     /// iOS: "github" to build on GitHub Actions instead of this Mac.
     public var buildOn: String?
     /// Android: "github" to build the app bundle on GitHub Actions.

@@ -105,6 +105,9 @@ class AscVersion {
   final String? releaseType;
 }
 
+/// Versions Apple still lets you edit and submit.
+const editableVersionStates = {'PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY'};
+
 class AscBetaLocalization {
   const AscBetaLocalization({required this.id, required this.locale, required this.whatsNew});
   final String id;
@@ -405,6 +408,118 @@ class AscClient {
     final r = await send('GET', '/v1/builds/$buildId/buildBetaDetail');
     final a = r['data']['attributes'];
     return BuildBetaState(a['internalBuildState'].string, a['externalBuildState'].string);
+  }
+
+  // MARK: App Store versions
+
+  Future<AscVersion> createVersion(String appId, String version) async {
+    final r = await send(
+      'POST',
+      '/v1/appStoreVersions',
+      body: {
+        'data': {
+          'type': 'appStoreVersions',
+          'attributes': {'platform': 'IOS', 'versionString': version},
+          'relationships': {
+            'app': {
+              'data': {'type': 'apps', 'id': appId},
+            },
+          },
+        },
+      },
+    );
+    final d = r['data'], a = d['attributes'];
+    return AscVersion(
+      id: d['id'].string ?? '',
+      version: a['versionString'].string ?? version,
+      platform: 'IOS',
+      state: a['appVersionState'].string ?? a['appStoreState'].string ?? 'PREPARE_FOR_SUBMISSION',
+      created: a['createdDate'].date,
+      releaseType: a['releaseType'].string,
+    );
+  }
+
+  /// The App Store version to write What's New into: the editable one with
+  /// this version string, created when there is none.
+  Future<({AscVersion version, bool created})> editableVersion(String appId, String version) async {
+    for (final v in await versions(appId)) {
+      if (v.version == version && v.platform == 'IOS' && editableVersionStates.contains(v.state)) return (version: v, created: false);
+    }
+    return (version: await createVersion(appId, version), created: true);
+  }
+
+  /// Whether the app has been on the App Store before (What's New only applies then).
+  Future<bool> hasShipped(String appId) async {
+    final r = await send(
+      'GET',
+      '/v1/apps/$appId/appStoreVersions',
+      query: {'filter[appStoreState]': 'READY_FOR_SALE,REPLACED_WITH_NEW_VERSION,REMOVED_FROM_SALE,DEVELOPER_REMOVED_FROM_SALE', 'limit': '1'},
+    );
+    return r['data'].list.isNotEmpty;
+  }
+
+  /// Writes What's New of one language of an App Store version.
+  Future<void> setVersionWhatsNew(String localizationId, String text) async {
+    await send(
+      'PATCH',
+      '/v1/appStoreVersionLocalizations/$localizationId',
+      body: {
+        'data': {
+          'type': 'appStoreVersionLocalizations',
+          'id': localizationId,
+          'attributes': {'whatsNew': text},
+        },
+      },
+    );
+  }
+
+  /// Adds a language to an App Store version. What's New is left out for an
+  /// app's first version, where Apple doesn't allow it.
+  Future<String> addLocalization(String versionId, String locale, {String? whatsNew}) async {
+    final r = await send(
+      'POST',
+      '/v1/appStoreVersionLocalizations',
+      body: {
+        'data': {
+          'type': 'appStoreVersionLocalizations',
+          'attributes': {'locale': locale, if (whatsNew != null && whatsNew.isNotEmpty) 'whatsNew': whatsNew},
+          'relationships': {
+            'appStoreVersion': {
+              'data': {'type': 'appStoreVersions', 'id': versionId},
+            },
+          },
+        },
+      },
+    );
+    return r['data']['id'].string ?? '';
+  }
+
+  /// Writes What's New for each language of an App Store version, adding the
+  /// languages it doesn't have yet. Returns one line per language for the log.
+  Future<List<String>> writeWhatsNew(String versionId, Map<String, String> notes) async {
+    final locs = await send(
+      'GET',
+      '/v1/appStoreVersions/$versionId/appStoreVersionLocalizations',
+      query: {'fields[appStoreVersionLocalizations]': 'locale', 'limit': '50'},
+    );
+    final existing = <String, String>{};
+    for (final d in locs['data'].list) {
+      final locale = d['attributes']['locale'].string;
+      if (locale != null) existing.putIfAbsent(locale, () => d['id'].string ?? '');
+    }
+    final lines = <String>[];
+    final sorted = notes.entries.where((e) => e.value.trim().isNotEmpty).toList()..sort((a, b) => a.key.compareTo(b.key));
+    for (final MapEntry(key: locale, value: text) in sorted) {
+      final id = existing[locale];
+      if (id != null) {
+        await setVersionWhatsNew(id, text);
+        lines.add('$locale: updated');
+      } else {
+        await addLocalization(versionId, locale, whatsNew: text);
+        lines.add('$locale: added the language');
+      }
+    }
+    return lines;
   }
 
   void close() => _http.close();

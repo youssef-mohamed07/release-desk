@@ -15,6 +15,7 @@ import '../core/flutter_project.dart';
 import '../core/github.dart';
 import '../core/release_run.dart';
 import '../core/shell.dart';
+import '../core/store_languages.dart';
 import '../core/workspace.dart';
 import 'app_model.dart';
 import 'console.dart';
@@ -442,22 +443,57 @@ class _Stepper extends StatelessWidget {
   }
 }
 
-/// Release notes per language, RTL where the language is.
+/// Note boxes by language. A dropped language keeps its text, so adding it
+/// back brings the text back.
+class _Notes {
+  final _boxes = <String, TextEditingController>{};
+
+  TextEditingController operator [](String locale) => _boxes.putIfAbsent(locale, TextEditingController.new);
+
+  Map<String, String> get texts => {for (final e in _boxes.entries) e.key: e.value.text};
+
+  /// The notes worth sending: chosen languages with some text.
+  Map<String, String> chosen(List<String> locales) => notesIn(texts, locales);
+
+  void fill(Map<String, String> draft) {
+    for (final e in draft.entries) {
+      this[e.key].text = e.value;
+    }
+  }
+
+  void dispose() {
+    for (final c in _boxes.values) {
+      c.dispose();
+    }
+  }
+}
+
+/// Release notes in the languages you pick: one box per language, RTL where
+/// the language is, a menu to add any language the store takes, and a button
+/// to drop one.
 class _NotesCard extends StatelessWidget {
   const _NotesCard({
     required this.title,
+    required this.icon,
+    required this.available,
     required this.locales,
-    required this.controllers,
+    required this.notes,
     required this.limit,
     required this.onChanged,
+    required this.onLocales,
     this.action,
     this.footer,
   });
   final String title;
+  final IconData icon;
+
+  /// Every language the store takes.
+  final List<String> available;
   final List<String> locales;
-  final Map<String, TextEditingController> controllers;
+  final _Notes notes;
   final int limit;
   final VoidCallback onChanged;
+  final ValueChanged<List<String>> onLocales;
   final Widget? action;
   final String? footer;
 
@@ -468,38 +504,92 @@ class _NotesCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CardTitle(title, Icons.chat_bubble_rounded, trailing: action),
+          CardTitle(
+            title,
+            icon,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (action != null) ...[action!, const SizedBox(width: 8)],
+                _LanguageMenu(available: available.where((l) => !locales.contains(l)).toList(), onAdd: (l) => onLocales([...locales, l])),
+              ],
+            ),
+          ),
           for (final locale in locales) ...[
             const SizedBox(height: 14),
             Row(
               children: [
-                Text(localeName(locale), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                Text(StoreLanguages.name(locale), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                 const SizedBox(width: 6),
                 Text(locale, style: mono(11.5, color: t.text3)),
                 const Spacer(),
                 Text(
-                  '${controllers[locale]!.text.length}/$limit',
-                  style: TextStyle(fontSize: 11, color: controllers[locale]!.text.length > limit ? Colors.orange : t.text3, fontFeatures: tabular),
+                  '${notes[locale].text.length}/$limit',
+                  style: TextStyle(fontSize: 11, color: notes[locale].text.length > limit ? Colors.orange : t.text2, fontFeatures: tabular),
                 ),
+                if (locales.length > 1)
+                  IconBtn(
+                    Icons.cancel_rounded,
+                    size: 14,
+                    color: t.text3,
+                    tooltip: 'Remove ${StoreLanguages.name(locale)}',
+                    onPressed: () => onLocales(locales.where((l) => l != locale).toList()),
+                  ),
               ],
             ),
             const SizedBox(height: 6),
             Sensitive(
               radius: 5,
               child: Field(
-                controller: controllers[locale]!,
+                controller: notes[locale],
                 minLines: 6,
                 maxLines: 14,
-                textDirection: locale.startsWith('ar') ? TextDirection.rtl : TextDirection.ltr,
+                textDirection: StoreLanguages.isRightToLeft(locale) ? TextDirection.rtl : TextDirection.ltr,
                 onChanged: (_) => onChanged(),
               ),
             ),
           ],
-          if (footer != null) ...[const SizedBox(height: 10), Text(footer!, style: TextStyle(fontSize: 12, color: t.text3))],
+          if (footer != null) ...[const SizedBox(height: 10), Text(footer!, style: TextStyle(fontSize: 12, color: t.text2))],
         ],
       ),
     );
   }
+}
+
+/// "+ Language": every language not chosen yet, by name.
+class _LanguageMenu extends StatelessWidget {
+  const _LanguageMenu({required this.available, required this.onAdd});
+  final List<String> available;
+  final ValueChanged<String> onAdd;
+
+  Future<void> _open(BuildContext context) async {
+    final button = context.findRenderObject()! as RenderBox;
+    final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        button.localToGlobal(button.size.bottomLeft(Offset.zero), ancestor: overlay),
+        button.localToGlobal(button.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+    final sorted = [...available]..sort((a, b) => StoreLanguages.name(a).compareTo(StoreLanguages.name(b)));
+    final code = await showMenu<String>(
+      context: context,
+      position: position,
+      constraints: const BoxConstraints(maxHeight: 380),
+      items: [for (final c in sorted) PopupMenuItem(value: c, height: 32, child: Text('${StoreLanguages.name(c)}  ·  $c'))],
+    );
+    if (code != null) onAdd(code);
+  }
+
+  @override
+  Widget build(BuildContext context) => SoftButton(
+    label: 'Language',
+    icon: Icons.add_rounded,
+    small: true,
+    tooltip: 'Add a language',
+    onPressed: available.isEmpty ? null : () => unawaited(_open(context)),
+  );
 }
 
 class _LaunchBar extends StatelessWidget {
@@ -922,7 +1012,10 @@ class _IosComposerState extends State<IosComposer> {
   final version = TextEditingController();
   final buildCtl = TextEditingController(text: '1');
   final selected = <String>{};
-  late final Map<String, TextEditingController> notes = {for (final l in widget.link.recipe.locales) l: TextEditingController()};
+  final notes = _Notes();
+
+  /// What's New of the App Store version, drafted apart from What to Test.
+  final storeNotes = _Notes();
   Map<String, String> previousNotes = {};
   List<String> commits = [];
   bool submitForReview = true;
@@ -945,13 +1038,16 @@ class _IosComposerState extends State<IosComposer> {
   void dispose() {
     version.dispose();
     buildCtl.dispose();
-    for (final c in notes.values) {
-      c.dispose();
-    }
+    notes.dispose();
+    storeNotes.dispose();
     super.dispose();
   }
 
   AppState _state(AppModel m) => m.apps[widget.app.id] ?? AppState();
+
+  Recipe _recipe(AppModel m) => m.workspace.link(widget.app.id)?.recipe ?? widget.link.recipe;
+
+  String get _storeDraftKey => 'store.${widget.app.id}';
 
   Future<void> _load() async {
     final model = ModelScope.read(context);
@@ -974,10 +1070,8 @@ class _IosComposerState extends State<IosComposer> {
     selected
       ..clear()
       ..addAll(remembered.isEmpty ? st.groups.map((g) => g.id) : remembered);
-    final draft = model.draft(widget.app.id);
-    for (final e in notes.entries) {
-      e.value.text = draft[e.key] ?? '';
-    }
+    notes.fill(model.draft(widget.app.id));
+    storeNotes.fill(model.draft(_storeDraftKey));
     setState(() => ready = true);
     final latest = st.builds.isEmpty ? null : st.builds.first;
     if (latest != null) {
@@ -992,7 +1086,17 @@ class _IosComposerState extends State<IosComposer> {
   }
 
   void _notesChanged() {
-    ModelScope.read(context).saveDraft(widget.app.id, {for (final e in notes.entries) e.key: e.value.text});
+    ModelScope.read(context).saveDraft(widget.app.id, notes.texts);
+    setState(() {});
+  }
+
+  void _storeNotesChanged() {
+    ModelScope.read(context).saveDraft(_storeDraftKey, storeNotes.texts);
+    setState(() {});
+  }
+
+  void _setLocales(void Function(Recipe) change) {
+    ModelScope.read(context).updateRecipe(widget.app.id, change);
     setState(() {});
   }
 
@@ -1024,7 +1128,9 @@ class _IosComposerState extends State<IosComposer> {
         final testers = g.map((x) => x.testerCount ?? 0).fold<int>(0, (a, b) => a + b);
         msg += ' Adds it to ${privacy ? counted(g.length, 'tester group') : g.map((x) => x.name).join(' and ')} (${counted(testers, 'tester')}).';
       }
-      if (notes.values.any((c) => c.text.trim().isNotEmpty)) msg += ' Writes What to Test.';
+      final recipe = _recipe(model);
+      if (notes.chosen(recipe.locales).isNotEmpty) msg += ' Writes What to Test.';
+      if (storeNotes.chosen(recipe.appStoreLocalesOrDefault).isNotEmpty) msg += " Writes What's New on App Store version ${version.text.trim()}.";
       if (submitForReview && g.any((x) => !x.isInternal)) msg += ' Submits it for beta app review.';
     }
     final ok = await _confirm(
@@ -1058,17 +1164,18 @@ class _IosComposerState extends State<IosComposer> {
       recipe: recipe,
       teamId: model.teamOfApp(widget.app.id)?.teamId,
       groups: ordered,
-      whatsNew: {
-        for (final e in notes.entries)
-          if (e.value.text.trim().isNotEmpty) e.key: e.value.text,
-      },
+      whatsNew: notes.chosen(recipe.locales),
+      appStoreNotes: storeNotes.chosen(recipe.appStoreLocalesOrDefault),
       submitForReview: submitForReview,
       rehearsal: rehearsal,
       cloud: CloudBuild(repo!, CloudTarget.ios),
     );
     try {
       await model.launch(plan);
-      if (!rehearsal) model.saveDraft(widget.app.id, {});
+      if (!rehearsal) {
+        model.saveDraft(widget.app.id, {});
+        model.saveDraft(_storeDraftKey, {});
+      }
     } catch (e) {
       setState(() => launchError = describeError(e));
     }
@@ -1079,6 +1186,7 @@ class _IosComposerState extends State<IosComposer> {
     final model = ModelScope.of(context);
     final t = context.tokens;
     final st = _state(model);
+    final recipe = _recipe(model);
     final latest = st.builds.isEmpty ? null : st.builds.first;
     final taken = _taken(st);
     final g = _groups(st);
@@ -1181,10 +1289,13 @@ class _IosComposerState extends State<IosComposer> {
         right: [
           _NotesCard(
             title: 'What to Test',
-            locales: widget.link.recipe.locales,
-            controllers: notes,
+            icon: Icons.chat_bubble_rounded,
+            available: StoreLanguages.appStore,
+            locales: recipe.locales,
+            notes: notes,
             limit: 4000,
             onChanged: _notesChanged,
+            onLocales: (v) => _setLocales((r) => r.locales = v),
             action: previousNotes.isEmpty
                 ? null
                 : SoftButton(
@@ -1192,8 +1303,7 @@ class _IosComposerState extends State<IosComposer> {
                     small: true,
                     onPressed: () {
                       for (final e in previousNotes.entries) {
-                        final c = notes[e.key];
-                        if (c != null && c.text.isEmpty) c.text = e.value;
+                        if (notes[e.key].text.isEmpty) notes[e.key].text = e.value;
                       }
                       _notesChanged();
                     },
@@ -1233,9 +1343,9 @@ class _IosComposerState extends State<IosComposer> {
                           size: 16,
                           tooltip: 'Add to the English notes',
                           onPressed: () {
-                            final key = notes.keys.firstWhere((k) => k.startsWith('en'), orElse: () => notes.keys.last);
-                            final cur = notes[key]!.text;
-                            notes[key]!.text = '$cur${cur.isEmpty || cur.endsWith('\n') ? '' : '\n'}- $c';
+                            final key = recipe.locales.firstWhere((k) => k.startsWith('en'), orElse: () => recipe.locales.lastOrNull ?? 'en-US');
+                            final cur = notes[key].text;
+                            notes[key].text = '$cur${cur.isEmpty || cur.endsWith('\n') ? '' : '\n'}- $c';
                             _notesChanged();
                           },
                         ),
@@ -1244,6 +1354,22 @@ class _IosComposerState extends State<IosComposer> {
                   ),
               ],
             ),
+          ),
+          // What's New on the App Store version, written during the run so the
+          // version is ready when you submit it for review.
+          _NotesCard(
+            title: "App Store What's New",
+            icon: Icons.storefront_rounded,
+            available: StoreLanguages.appStore,
+            locales: recipe.appStoreLocalesOrDefault,
+            notes: storeNotes,
+            limit: 4000,
+            onChanged: _storeNotesChanged,
+            onLocales: (v) => _setLocales((r) => r.appStoreLocales = v),
+            footer:
+                'For the App Store release, not TestFlight. Release Desk writes it into App Store version ${version.text.trim().isEmpty ? '–' : version.text.trim()}, '
+                'making the version and any missing language when needed, so it is ready when you submit for review. '
+                "Leave it empty to skip. An app's first version has no What's New.",
           ),
         ],
         bar: _LaunchBar(
@@ -1341,8 +1467,7 @@ class _PlayComposerState extends State<PlayComposer> {
   String track = 'internal';
   String status = 'completed';
   double rollout = 0.2;
-  static const locales = ['en-US', 'ar'];
-  final notes = {for (final l in locales) l: TextEditingController()};
+  final notes = _Notes();
   bool writeBuildNumber = true;
   bool rehearsal = false;
   bool ready = false;
@@ -1363,13 +1488,13 @@ class _PlayComposerState extends State<PlayComposer> {
   void dispose() {
     version.dispose();
     buildCtl.dispose();
-    for (final c in notes.values) {
-      c.dispose();
-    }
+    notes.dispose();
     super.dispose();
   }
 
   AppState _state(AppModel m) => m.apps[widget.app.id] ?? AppState();
+
+  List<String> _locales(AppModel m) => (m.workspace.link(widget.app.id)?.recipe ?? widget.link.recipe).playLocalesOrDefault;
 
   int _highest(AppState st) {
     var h = 0;
@@ -1407,15 +1532,12 @@ class _PlayComposerState extends State<PlayComposer> {
     track = widget.link.recipe.playTrack ?? 'internal';
     status = widget.link.recipe.playStatus ?? 'completed';
     onGitHub = widget.link.recipe.androidBuildOn == 'github';
-    final draft = model.draft(widget.app.id);
-    for (final e in notes.entries) {
-      e.value.text = draft[e.key] ?? '';
-    }
+    notes.fill(model.draft(widget.app.id));
     setState(() => ready = true);
   }
 
   void _notesChanged() {
-    ModelScope.read(context).saveDraft(widget.app.id, {for (final e in notes.entries) e.key: e.value.text});
+    ModelScope.read(context).saveDraft(widget.app.id, notes.texts);
     setState(() {});
   }
 
@@ -1468,10 +1590,7 @@ class _PlayComposerState extends State<PlayComposer> {
       version: version.text.trim(),
       build: buildNumber,
       recipe: recipe,
-      whatsNew: {
-        for (final e in notes.entries)
-          if (e.value.text.trim().isNotEmpty) e.key: e.value.text,
-      },
+      whatsNew: notes.chosen(recipe.playLocalesOrDefault),
       rehearsal: rehearsal,
       cloud: onGitHub ? CloudBuild(repo!, CloudTarget.android) : null,
       play: PlayTarget(track: track, status: status, userFraction: status == 'inProgress' ? rollout : null),
@@ -1640,11 +1759,17 @@ class _PlayComposerState extends State<PlayComposer> {
         right: [
           _NotesCard(
             title: "What's new",
-            locales: locales,
-            controllers: notes,
+            icon: Icons.chat_bubble_rounded,
+            available: StoreLanguages.play,
+            locales: _locales(model),
+            notes: notes,
             limit: 500,
             onChanged: _notesChanged,
-            footer: 'Play allows 500 characters per language.',
+            onLocales: (v) {
+              model.updateRecipe(widget.app.id, (r) => r.playLocales = v);
+              setState(() {});
+            },
+            footer: 'Goes with the release on the track you choose, Production included. Play allows 500 characters per language.',
           ),
         ],
         bar: _LaunchBar(

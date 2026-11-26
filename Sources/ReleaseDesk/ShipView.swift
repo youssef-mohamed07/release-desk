@@ -172,6 +172,7 @@ struct ShipComposer: View {
     @State private var selectedGroups: Set<String> = []
     @State private var notes: [String: String] = [:]
     @State private var previousNotes: [String: String] = [:]
+    @State private var storeNotes: [String: String] = [:]
     @State private var commits: [String] = []
     @State private var submitForReview = true
     @State private var writeBuildNumber = true
@@ -209,6 +210,7 @@ struct ShipComposer: View {
                         VStack(spacing: 20) {
                             notesCard
                             commitsCard
+                            storeNotesCard
                         }
                     }
                 }
@@ -221,6 +223,7 @@ struct ShipComposer: View {
         .background(alignment: .top) { AmbientGlow(url: model.iconURL(app.id), intensity: 0.45).frame(height: 460) }
         .task(id: link.path) { await load() }
         .onChange(of: notes) { Drafts.save(notes, for: app.id) }
+        .onChange(of: storeNotes) { Drafts.save(storeNotes, for: "store." + app.id) }
         .alert(rehearsal ? "Rehearse \(privacy ? "this app" : app.name) \(version) (\(build))?" : "Ship \(privacy ? "this app" : app.name) \(version) (\(build))?", isPresented: $confirming) {
             Button(rehearsal ? "Rehearse" : "Ship to TestFlight") { launch() }
             Button("Cancel", role: .cancel) {}
@@ -354,41 +357,29 @@ struct ShipComposer: View {
         .card()
     }
 
+    private var recipe: IOSRecipe { model.workspace.link(for: app.id)?.recipe ?? link.recipe }
+
     private var notesCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("What to Test", systemImage: "text.bubble.fill").font(.headline)
-                Spacer()
-                if !previousNotes.isEmpty {
-                    Button("Start from build \(latest?.number ?? "")") {
-                        for (k, v) in previousNotes where (notes[k] ?? "").isEmpty { notes[k] = v }
-                    }
-                    .buttonStyle(.glass).controlSize(.small)
+        NotesEditor(title: "What to Test", symbol: "text.bubble.fill", limit: 4000, available: StoreLanguages.appStore,
+                    locales: Binding(get: { recipe.locales }, set: { v in model.updateRecipe(appID: app.id) { $0.locales = v } }),
+                    notes: $notes) {
+            if !previousNotes.isEmpty {
+                Button("Start from build \(latest?.number ?? "")") {
+                    for (k, v) in previousNotes where (notes[k] ?? "").isEmpty { notes[k] = v }
                 }
-            }
-            ForEach(link.recipe.locales, id: \.self) { locale in
-                let rtl = locale.hasPrefix("ar")
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(Locale.current.localizedString(forIdentifier: locale) ?? locale).font(.caption.weight(.semibold))
-                        Text(locale).font(.caption.monospaced()).foregroundStyle(.tertiary)
-                        Spacer()
-                        Text("\((notes[locale] ?? "").count)/4000").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
-                    }
-                    TextEditor(text: Binding(get: { notes[locale] ?? "" }, set: { notes[locale] = $0 }))
-                        .font(.system(size: 13.5))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 130)
-                        .sensitive(5)
-                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.2)))
-                        .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
-                        .multilineTextAlignment(rtl ? .trailing : .leading)
-                }
+                .buttonStyle(.glass).controlSize(.small)
             }
         }
-        .card()
+    }
+
+    /// What's New on the App Store version, written during the run so the
+    /// version is ready when you submit it for review.
+    private var storeNotesCard: some View {
+        NotesEditor(title: "App Store What's New", symbol: "app.badge.fill", limit: 4000, available: StoreLanguages.appStore,
+                    locales: Binding(get: { recipe.appStoreLocales ?? recipe.locales },
+                                     set: { v in model.updateRecipe(appID: app.id) { $0.appStoreLocales = v } }),
+                    notes: $storeNotes,
+                    footer: "For the App Store release, not TestFlight. Release Desk writes it into App Store version \(version.isEmpty ? "–" : version), making the version and any missing language when needed, so it is ready when you submit for review. Leave it empty to skip. An app's first version has no What's New.")
     }
 
     private var commitsCard: some View {
@@ -407,7 +398,7 @@ struct ShipComposer: View {
                     Text(c).font(.callout).textSelection(.enabled).sensitive(5)
                     Spacer()
                     Button {
-                        let key = link.recipe.locales.first { $0.hasPrefix("en") } ?? link.recipe.locales.last ?? "en-US"
+                        let key = recipe.locales.first { $0.hasPrefix("en") } ?? recipe.locales.last ?? "en-US"
                         let cur = notes[key] ?? ""
                         notes[key] = cur + (cur.isEmpty || cur.hasSuffix("\n") ? "" : "\n") + "- \(c)"
                     } label: { Image(systemName: "plus.circle") }
@@ -465,7 +456,8 @@ struct ShipComposer: View {
             let testers = groups.compactMap(\.testerCount).reduce(0, +)
             s += " Adds it to \(privacy ? counted(groups.count, "tester group") : groups.map(\.name).joined(separator: " and ")) (\(counted(testers, "tester")))."
         }
-        if notes.values.contains(where: { !$0.isEmpty }) { s += " Writes What to Test." }
+        if !notes.notes(in: recipe.locales).isEmpty { s += " Writes What to Test." }
+        if !storeNotes.notes(in: recipe.appStoreLocales ?? recipe.locales).isEmpty { s += " Writes What's New on App Store version \(version)." }
         if submitForReview && groups.contains(where: { !$0.isInternal }) { s += " Submits it for beta app review." }
         return s
     }
@@ -486,6 +478,7 @@ struct ShipComposer: View {
         let remembered = Set(link.recipe.groupIDs).intersection(state.groups.map(\.id))
         selectedGroups = remembered.isEmpty ? Set(state.groups.map(\.id)) : remembered
         notes = Drafts.load(for: app.id)
+        storeNotes = Drafts.load(for: "store." + app.id)
         onGitHub = link.recipe.buildOn == "github"
         ready = true
         if let latest, let c = try? model.client(forApp: app.id) {
@@ -507,12 +500,13 @@ struct ShipComposer: View {
         recipe.writeBuildNumber = writeBuildNumber
         var plan = ReleasePlan(app: app, projectRoot: project.root, version: version, build: build, recipe: recipe,
                                teamID: model.team(ofApp: app.id)?.teamID, groups: ordered,
-                               whatsNew: notes.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+                               whatsNew: notes.notes(in: recipe.locales),
                                submitForReview: submitForReview, rehearsal: rehearsal)
+        plan.appStoreNotes = storeNotes.notes(in: recipe.appStoreLocales ?? recipe.locales)
         if onGitHub, let repo { plan.cloud = CloudBuild(repo: repo, target: .ios) }
         do {
             _ = try model.launch(plan)
-            if !rehearsal { Drafts.clear(for: app.id) }
+            if !rehearsal { Drafts.clear(for: app.id); Drafts.clear(for: "store." + app.id) }
             onLaunch()
         } catch {
             launchError = error.localizedDescription

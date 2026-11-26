@@ -2,14 +2,14 @@ import Foundation
 import Observation
 
 public enum StepID: String, CaseIterable, Sendable, Codable {
-    case prepare, archive, sign, export, upload, processing, notes, groups, review, live
+    case prepare, archive, sign, export, upload, processing, notes, storeNotes, groups, review, live
     case bundle, checkSigning, playRelease
     case cloudBuild
 
     public static func steps(for platform: Platform, cloud: Bool = false) -> [StepID] {
         switch platform {
-        case .ios where cloud: [.prepare, .cloudBuild, .processing, .notes, .groups, .review, .live]
-        case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .groups, .review, .live]
+        case .ios where cloud: [.prepare, .cloudBuild, .processing, .notes, .storeNotes, .groups, .review, .live]
+        case .ios: [.prepare, .archive, .sign, .export, .upload, .processing, .notes, .storeNotes, .groups, .review, .live]
         case .android where cloud: [.prepare, .cloudBuild, .playRelease]
         case .android: [.prepare, .bundle, .checkSigning, .playRelease]
         }
@@ -24,6 +24,7 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .upload: "Upload"
         case .processing: "Apple processing"
         case .notes: "What to Test"
+        case .storeNotes: "App Store What's New"
         case .groups: "TestFlight groups"
         case .review: "Beta review"
         case .live: "Live for testers"
@@ -43,6 +44,7 @@ public enum StepID: String, CaseIterable, Sendable, Codable {
         case .upload: "icloud.and.arrow.up"
         case .processing: "gearshape.2"
         case .notes: "text.bubble"
+        case .storeNotes: "app.badge"
         case .groups: "person.3"
         case .review: "checkmark.shield"
         case .live: "airplane.departure"
@@ -121,6 +123,8 @@ public struct ReleasePlan: Sendable {
     public var teamID: String?
     public var groups: [ASCBetaGroup]
     public var whatsNew: [String: String]
+    /// What's New for the App Store version of this release, by locale.
+    public var appStoreNotes: [String: String] = [:]
     public var submitForReview: Bool
     /// Stops after export: everything local, nothing sent to Apple.
     public var rehearsal: Bool
@@ -264,15 +268,15 @@ public final class ReleaseRun: Identifiable {
             (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.playRelease, releaseToPlay),
         ] : plan.cloud != nil ? [
             (.prepare, prepareCloud), (.cloudBuild, cloudBuild), (.processing, waitForProcessing), (.notes, writeNotes),
-            (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
+            (.storeNotes, writeStoreNotes), (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
         ] : plan.platform == .ios ? [
             (.prepare, prepare), (.archive, archive), (.sign, preSign), (.export, export),
             (.upload, upload), (.processing, waitForProcessing), (.notes, writeNotes),
-            (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
+            (.storeNotes, writeStoreNotes), (.groups, addToGroups), (.review, submitReview), (.live, waitUntilLive),
         ] : [
             (.prepare, prepareAndroid), (.bundle, buildBundle), (.checkSigning, checkSigning), (.playRelease, releaseToPlay),
         ]
-        let remote: Set<StepID> = [.upload, .processing, .notes, .groups, .review, .live, .playRelease]
+        let remote: Set<StepID> = [.upload, .processing, .notes, .storeNotes, .groups, .review, .live, .playRelease]
         var resuming = plan.startAt != nil
         for (id, body) in order {
             if Task.isCancelled { break }
@@ -517,6 +521,26 @@ public final class ReleaseRun: Identifiable {
             try await client.setWhatsNew(buildID: buildID!, locale: locale, text: text)
             log("What to Test (\(locale)) written")
         }
+        return .done
+    }
+
+    private func writeStoreNotes(_ ctx: inout Context) async throws -> StepState {
+        let notes = plan.appStoreNotes.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !notes.isEmpty else { return .skipped("No text") }
+        guard try await client.hasShipped(appID: plan.app.id) else {
+            return .skipped("This is the app's first App Store version, which has no What's New")
+        }
+        let version: ASCVersion
+        do {
+            let found = try await client.editableVersion(appID: plan.app.id, version: plan.version)
+            version = found.version
+            if found.created { log("Created App Store version \(plan.version)") }
+        } catch let e as ReleaseError where e.httpStatus == 409 {
+            return .warning("App Store Connect didn't make version \(plan.version): another version is still being prepared. Write What's New there from Submit for review. (\(e.localizedDescription))")
+        }
+        detail(.storeNotes, "Version \(version.version)")
+        for line in try await client.writeWhatsNew(versionID: version.id, notes: notes) { log("What's New \(line)") }
+        log("What's New is ready on App Store version \(version.version)", .success)
         return .done
     }
 

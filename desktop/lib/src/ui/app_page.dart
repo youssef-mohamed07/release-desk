@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/asc.dart';
+import '../core/store_languages.dart';
 import 'app_model.dart';
 import 'overview.dart';
 import 'play_pages.dart';
@@ -623,7 +624,7 @@ class _BuildSheetState extends State<BuildSheet> {
                                 child: Sensitive(
                                   child: SelectableText(
                                     n.whatsNew.isEmpty ? '—' : n.whatsNew,
-                                    textDirection: n.locale.startsWith('ar') ? TextDirection.rtl : TextDirection.ltr,
+                                    textDirection: StoreLanguages.isRightToLeft(n.locale) ? TextDirection.rtl : TextDirection.ltr,
                                   ),
                                 ),
                               ),

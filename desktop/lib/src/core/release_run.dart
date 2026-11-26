@@ -18,6 +18,7 @@ enum StepId {
   cloudBuild('Build on GitHub'),
   processing('Apple processing'),
   notes('What to Test'),
+  storeNotes("App Store What's New"),
   groups('TestFlight groups'),
   review('Beta review'),
   live('Live for testers'),
@@ -30,7 +31,7 @@ enum StepId {
 
   /// iOS always builds on GitHub here: Windows and Linux cannot build iOS apps.
   static List<StepId> stepsFor(ReleasePlatform platform, {bool cloud = false}) => switch (platform) {
-    ReleasePlatform.ios => const [prepare, cloudBuild, processing, notes, groups, review, live],
+    ReleasePlatform.ios => const [prepare, cloudBuild, processing, notes, storeNotes, groups, review, live],
     ReleasePlatform.android when cloud => const [prepare, cloudBuild, playRelease],
     ReleasePlatform.android => const [prepare, bundle, checkSigning, playRelease],
   };
@@ -104,6 +105,7 @@ class ReleasePlan {
     this.teamId,
     this.groups = const [],
     this.whatsNew = const {},
+    this.appStoreNotes = const {},
     this.submitForReview = false,
     this.rehearsal = false,
     this.cloud,
@@ -120,6 +122,9 @@ class ReleasePlan {
   final String? teamId;
   final List<AscBetaGroup> groups;
   final Map<String, String> whatsNew;
+
+  /// What's New for the App Store version of this release, by locale.
+  final Map<String, String> appStoreNotes;
   final bool submitForReview;
 
   /// iOS: the GitHub run builds and signs but does not upload. Android: the
@@ -141,6 +146,7 @@ class ReleasePlan {
     teamId: teamId,
     groups: groups,
     whatsNew: whatsNew,
+    appStoreNotes: appStoreNotes,
     submitForReview: submitForReview,
     rehearsal: rehearsal,
     cloud: cloud,
@@ -289,12 +295,13 @@ class ReleaseRun extends ChangeNotifier {
             (StepId.cloudBuild, _cloudBuild),
             (StepId.processing, _waitForProcessing),
             (StepId.notes, _writeNotes),
+            (StepId.storeNotes, _writeStoreNotes),
             (StepId.groups, _addToGroups),
             (StepId.review, _submitReview),
             (StepId.live, _waitUntilLive),
           ]
         : [(StepId.prepare, _prepareAndroid), (StepId.bundle, _buildBundle), (StepId.checkSigning, _checkSigning), (StepId.playRelease, _releaseToPlay)];
-    const remote = {StepId.processing, StepId.notes, StepId.groups, StepId.review, StepId.live, StepId.playRelease};
+    const remote = {StepId.processing, StepId.notes, StepId.storeNotes, StepId.groups, StepId.review, StepId.live, StepId.playRelease};
     var resuming = plan.startAt != null;
     for (final (id, body) in order) {
       if (cancelToken.isCancelled) break;
@@ -532,6 +539,32 @@ class ReleaseRun extends ChangeNotifier {
       await _asc.setWhatsNew(buildId!, n.key, n.value);
       log('What to Test (${n.key}) written');
     }
+    return StepState.done;
+  }
+
+  Future<StepState> _writeStoreNotes() async {
+    final notes = {
+      for (final e in plan.appStoreNotes.entries)
+        if (e.value.trim().isNotEmpty) e.key: e.value,
+    };
+    if (notes.isEmpty) return const StepState.skipped('No text');
+    if (!await _asc.hasShipped(plan.app.id)) return const StepState.skipped("This is the app's first App Store version, which has no What's New");
+    final AscVersion version;
+    try {
+      final found = await _asc.editableVersion(plan.app.id, plan.version);
+      version = found.version;
+      if (found.created) log('Created App Store version ${plan.version}');
+    } on ReleaseError catch (e) {
+      if (e.status != 409) rethrow;
+      return StepState.warning(
+        "App Store Connect didn't make version ${plan.version}: another version is still being prepared. Write What's New in App Store Connect. (${e.message})",
+      );
+    }
+    _detail(StepId.storeNotes, 'Version ${version.version}');
+    for (final line in await _asc.writeWhatsNew(version.id, notes)) {
+      log("What's New $line");
+    }
+    log("What's New is ready on App Store version ${version.version}", LogKind.success);
     return StepState.done;
   }
 

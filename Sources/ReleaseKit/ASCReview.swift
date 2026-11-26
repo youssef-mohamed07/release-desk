@@ -106,9 +106,7 @@ extension ASCClient {
             items.append(.init(title: "Build", ok: false, detail: "Choose a processed build of this version"))
         }
 
-        let shipped = (try? await send("GET", "/v1/apps/\(appID)/appStoreVersions", query: [
-            "filter[appStoreState]": "READY_FOR_SALE,REPLACED_WITH_NEW_VERSION,REMOVED_FROM_SALE,DEVELOPER_REMOVED_FROM_SALE", "limit": "1",
-        ]))?["data"].array.isEmpty == false
+        let shipped = (try? await hasShipped(appID: appID)) ?? false
         return ReviewReadiness(items: items, localizations: localizations, attachedBuildID: attachedID, hasShipped: shipped)
     }
 
@@ -120,6 +118,59 @@ extension ASCClient {
         try await send("PATCH", "/v1/appStoreVersionLocalizations/\(localizationID)", body: [
             "data": ["type": "appStoreVersionLocalizations", "id": .string(localizationID), "attributes": ["whatsNew": .string(text)]],
         ])
+    }
+
+    /// Adds a language to an App Store version. What's New is left out for an
+    /// app's first version, where Apple doesn't allow it.
+    @discardableResult
+    public func addLocalization(versionID: String, locale: String, whatsNew: String? = nil) async throws -> String {
+        var attributes: [String: JSONValue] = ["locale": .string(locale)]
+        if let whatsNew, !whatsNew.isEmpty { attributes["whatsNew"] = .string(whatsNew) }
+        let r = try await send("POST", "/v1/appStoreVersionLocalizations", body: [
+            "data": [
+                "type": "appStoreVersionLocalizations",
+                "attributes": .object(attributes),
+                "relationships": ["appStoreVersion": ["data": ["type": "appStoreVersions", "id": .string(versionID)]]],
+            ],
+        ])
+        return r["data"]["id"].string ?? ""
+    }
+
+    /// The App Store version to write What's New into: the editable one with
+    /// this version string, created when there is none.
+    public func editableVersion(appID: String, version: String) async throws -> (version: ASCVersion, created: Bool) {
+        if let v = try await versions(appID: appID).first(where: { $0.version == version && $0.platform == "IOS" && editableVersionStates.contains($0.state) }) {
+            return (v, false)
+        }
+        return (try await createVersion(appID: appID, version: version), true)
+    }
+
+    /// Whether the app has been on the App Store before (What's New only applies then).
+    public func hasShipped(appID: String) async throws -> Bool {
+        try await send("GET", "/v1/apps/\(appID)/appStoreVersions", query: [
+            "filter[appStoreState]": "READY_FOR_SALE,REPLACED_WITH_NEW_VERSION,REMOVED_FROM_SALE,DEVELOPER_REMOVED_FROM_SALE", "limit": "1",
+        ])["data"].array.isEmpty == false
+    }
+
+    /// Writes What's New for each language of an App Store version, adding the
+    /// languages it doesn't have yet. Returns one line per language for the log.
+    public func writeWhatsNew(versionID: String, notes: [String: String]) async throws -> [String] {
+        let locs = try await send("GET", "/v1/appStoreVersions/\(versionID)/appStoreVersionLocalizations", query: [
+            "fields[appStoreVersionLocalizations]": "locale", "limit": "50",
+        ])
+        let existing = Dictionary(locs["data"].array.compactMap { d in d["attributes"]["locale"].string.map { ($0, d["id"].string ?? "") } },
+                                  uniquingKeysWith: { a, _ in a })
+        var lines: [String] = []
+        for (locale, text) in notes.sorted(by: { $0.key < $1.key }) where !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let id = existing[locale] {
+                try await setWhatsNew(localizationID: id, text: text)
+                lines.append("\(locale): updated")
+            } else {
+                try await addLocalization(versionID: versionID, locale: locale, whatsNew: text)
+                lines.append("\(locale): added the language")
+            }
+        }
+        return lines
     }
 
     /// MANUAL or AFTER_APPROVAL.

@@ -214,9 +214,10 @@ ReleaseRun _run(FakeModel m, Directory dir, RunPhase phase) {
   run.phase = phase;
   run.started = DateTime.now().subtract(const Duration(minutes: 23, seconds: 41));
   if (phase != RunPhase.running) run.finished = DateTime.now();
+  final groups = run.steps.indexOf(run.step(StepId.groups));
   final done = switch (phase) {
-    RunPhase.succeeded => 7,
-    RunPhase.failed => 4,
+    RunPhase.succeeded => run.steps.length,
+    RunPhase.failed => groups,
     _ => 2,
   };
   for (final (i, s) in run.steps.indexed) {
@@ -234,8 +235,8 @@ ReleaseRun _run(FakeModel m, Directory dir, RunPhase phase) {
     run.current = run.steps[2].id;
   }
   if (phase == RunPhase.failed) {
-    run.steps[4].state = const StepState.failed('App Store Connect 409 on /v1/builds/relationships: the group is not ready');
-    run.steps[4].finished = DateTime.now();
+    run.steps[groups].state = const StepState.failed('App Store Connect 409 on /v1/builds/relationships: the group is not ready');
+    run.steps[groups].finished = DateTime.now();
     run.failure = 'TestFlight groups: the group is not ready';
   }
   for (final (s, k, t) in [
@@ -316,8 +317,13 @@ void main() {
         FocusManager.instance.primaryFocus?.unfocus();
       }
       await shoot(tester, '$tag-05-ship-ios');
+      expect(find.text('What to Test'), findsOneWidget);
+      expect(find.text("App Store What's New"), findsOneWidget);
+      expect(find.text('Language'), findsNWidgets(2));
       m.go(const AppRoute.ship('play:com.example.atlas'));
       await shoot(tester, '$tag-06-ship-play');
+      expect(find.text("What's new"), findsOneWidget);
+      expect(find.textContaining('Production included'), findsOneWidget);
       m.go(const AppRoute.activity());
       await shoot(tester, '$tag-07-activity');
       m.privacy = true;
@@ -328,6 +334,63 @@ void main() {
       await tearDownApp(tester);
     });
   }
+
+  testWidgets('ship notes pick their languages', (tester) async {
+    final (m, _) = await setUp(tester);
+    Future<void> settle() async {
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(tester.takeException(), isNull);
+    }
+
+    Future<void> tap(Finder f) async {
+      await tester.ensureVisible(f);
+      await tester.pump();
+      await tester.tap(f);
+      await settle();
+    }
+
+    final rtl = find.byWidgetPredicate((w) => w is TextField && w.textDirection == TextDirection.rtl);
+    final boxes = find.byWidgetPredicate((w) => w is TextField && w.minLines == 6);
+    Recipe recipe(String id) => m.workspace.link(id)!.recipe;
+
+    // iOS: What to Test and the App Store card, both in Arabic and English.
+    m.go(const AppRoute.ship('1001'));
+    await settle();
+    expect(find.text('Arabic (Saudi Arabia)'), findsNWidgets(2));
+    expect(rtl, findsNWidgets(2));
+    expect(boxes, findsNWidgets(4));
+    await tap(find.text('Language').last);
+    await tap(find.text('Catalan  ·  ca'));
+    expect(recipe('1001').appStoreLocales, ['ar-SA', 'en-US', 'ca']);
+    expect(recipe('1001').locales, ['ar-SA', 'en-US']);
+    expect(boxes, findsNWidgets(5));
+    await tester.enterText(boxes.at(4), 'Nova cerca.');
+    await tester.pump();
+    expect(m.draft('store.1001'), {'ca': 'Nova cerca.'});
+    expect(m.draft('1001'), isEmpty);
+    expect(find.text('11/4000'), findsOneWidget);
+    await tap(find.byTooltip('Remove Catalan'));
+    expect(recipe('1001').appStoreLocales, ['ar-SA', 'en-US']);
+    expect(boxes, findsNWidgets(4));
+
+    // Play: English and Arabic until another language is picked.
+    m.go(const AppRoute.ship('play:com.example.atlas'));
+    await settle();
+    expect(recipe('play:com.example.atlas').playLocales, isNull);
+    expect(find.text('Arabic'), findsOneWidget);
+    expect(rtl, findsOneWidget);
+    await tap(find.text('Language'));
+    await tap(find.text('Afrikaans  ·  af'));
+    expect(recipe('play:com.example.atlas').playLocales, ['en-US', 'ar', 'af']);
+    await tester.enterText(boxes.at(2), 'x' * 501);
+    await tester.pump();
+    expect((tester.widget(find.text('501/500')) as Text).style?.color, Colors.orange);
+    await tap(find.byTooltip('Remove Arabic'));
+    expect(recipe('play:com.example.atlas').playLocales, ['en-US', 'af']);
+    expect(rtl, findsNothing);
+    await tearDownApp(tester);
+  });
 
   testWidgets('launch console in every phase', (tester) async {
     final (m, dir) = await setUp(tester);

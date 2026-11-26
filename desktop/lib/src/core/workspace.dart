@@ -98,6 +98,8 @@ class Recipe {
     List<String>? groupIds,
     this.submitForReview = true,
     List<String>? locales,
+    this.appStoreLocales,
+    this.playLocales,
     this.androidBuildOn,
     this.playTrack,
     this.playStatus,
@@ -111,6 +113,8 @@ class Recipe {
     groupIds: (j['groupIDs'] as List?)?.whereType<String>().toList(),
     submitForReview: j['submitForReview'] as bool? ?? true,
     locales: (j['locales'] as List?)?.whereType<String>().toList(),
+    appStoreLocales: (j['appStoreLocales'] as List?)?.whereType<String>().toList(),
+    playLocales: (j['playLocales'] as List?)?.whereType<String>().toList(),
     androidBuildOn: j['androidBuildOn'] as String?,
     playTrack: j['playTrack'] as String?,
     playStatus: j['playStatus'] as String?,
@@ -121,7 +125,21 @@ class Recipe {
   bool writeBuildNumber;
   List<String> groupIds;
   bool submitForReview;
+
+  /// Languages of What to Test (TestFlight).
   List<String> locales;
+
+  /// Languages of the App Store version's What's New; null means the same as [locales].
+  List<String>? appStoreLocales;
+
+  /// Languages of a Google Play release's What's new; null means English and Arabic.
+  List<String>? playLocales;
+
+  /// The App Store What's New languages in effect.
+  List<String> get appStoreLocalesOrDefault => appStoreLocales ?? locales;
+
+  /// The Play What's new languages in effect.
+  List<String> get playLocalesOrDefault => playLocales ?? ['en-US', 'ar'];
 
   /// Android: "github" to build on GitHub Actions instead of this computer.
   String? androidBuildOn;
@@ -139,6 +157,8 @@ class Recipe {
     'groupIDs': groupIds,
     'submitForReview': submitForReview,
     'locales': locales,
+    'appStoreLocales': appStoreLocales,
+    'playLocales': playLocales,
     'androidBuildOn': androidBuildOn,
     'playTrack': playTrack,
     'playStatus': playStatus,
