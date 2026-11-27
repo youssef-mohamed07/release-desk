@@ -343,7 +343,7 @@ struct WelcomeView: View {
                     Button { model.connecting = .microsoft } label: { Label { Text("Microsoft Store") } icon: { WindowsMark(size: 13) } }
                 }
                 .buttonStyle(.glass)
-                Text("Keys go to your Keychain. Nothing leaves this Mac except calls to Apple, Google and GitHub.")
+                Text("Keys go to your Keychain. Nothing leaves this Mac except calls to the stores and GitHub.")
                     .font(.callout).foregroundStyle(.tertiary)
             }
             .padding(40)

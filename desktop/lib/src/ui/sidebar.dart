@@ -7,6 +7,7 @@ import '../core/release_run.dart';
 import '../core/workspace.dart';
 import 'app_model.dart';
 import '../core/play.dart';
+import 'store_pages.dart';
 import 'theme.dart';
 
 class Sidebar extends StatefulWidget {
@@ -134,6 +135,8 @@ class _SidebarState extends State<Sidebar> {
                   onTap: () => model.connect(StoreProvider.apple),
                 ),
                 _NavRow(iconWidget: const PlayMark(size: 16), title: 'Google Play', onTap: () => model.connect(StoreProvider.google)),
+                _NavRow(iconWidget: const AppGalleryMark(size: 15), title: 'AppGallery', onTap: () => model.connect(StoreProvider.huawei)),
+                _NavRow(iconWidget: const WindowsMark(size: 14), title: 'Microsoft Store', onTap: () => model.connect(StoreProvider.microsoft)),
               ],
             ),
           ),
@@ -167,7 +170,7 @@ class _SidebarState extends State<Sidebar> {
             clipBehavior: Clip.none,
             children: [
               Icon(Icons.groups_2_outlined, size: 17, color: t.text2),
-              if (team.credential.isGoogle) const Positioned(right: -4, bottom: -4, child: PlayMark(size: 9)),
+              if (team.credential.store != StoreProvider.apple) Positioned(right: -4, bottom: -4, child: ProviderMark(team.credential.store, size: 9)),
             ],
           ),
           titleWidget: Column(
@@ -209,6 +212,10 @@ class _SidebarState extends State<Sidebar> {
     final st = model.apps[app.id];
     if (model.activeRun(app.id) != null) {
       dot = Pulse(child: Icon(Icons.send_rounded, size: 11, color: Palette.cyan));
+    } else if (st?.agc != null) {
+      dot = _Dot(agcTone(st!.agc!).color(context));
+    } else if ((st?.ms?.pendingStatus ?? st?.ms?.lastStatus) != null) {
+      dot = _Dot(describeMicrosoft(st!.ms!.pendingStatus ?? st.ms!.lastStatus).tone.color(context));
     } else if (app.isPlay) {
       if (st?.error != null) {
         dot = Icon(Icons.key_outlined, size: 12, color: waitingColor);

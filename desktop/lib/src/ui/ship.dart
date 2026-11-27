@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/app_gallery.dart';
 import '../core/asc.dart';
 import '../core/errors.dart';
 import '../core/flutter_project.dart';
@@ -47,9 +48,11 @@ class ShipPage extends StatelessWidget {
     }
     final link = model.workspace.link(appId);
     if (link == null) return LinkProjectPanel(key: ValueKey('link-$appId'), app: app);
-    return app.isPlay
-        ? PlayComposer(key: ValueKey('play-${link.path}'), app: app, link: link)
-        : IosComposer(key: ValueKey('ios-${link.path}'), app: app, link: link);
+    return switch (app.store) {
+      StoreProvider.google || StoreProvider.huawei => PlayComposer(key: ValueKey('play-${app.id}-${link.path}'), app: app, link: link),
+      StoreProvider.microsoft => WindowsComposer(key: ValueKey('windows-${link.path}'), app: app, link: link),
+      StoreProvider.apple => IosComposer(key: ValueKey('ios-${link.path}'), app: app, link: link),
+    };
   }
 }
 
@@ -85,9 +88,13 @@ class _LinkProjectPanelState extends State<LinkProjectPanel> {
     final model = ModelScope.read(context);
     final roots = ProjectScanner.roots(model.workspace.links.map((l) => l.path));
     final id = widget.app.bundleId;
+    // A Microsoft Store identity isn't in the Flutter project, so any project with Windows support fits.
+    final windows = widget.app.store == StoreProvider.microsoft;
     try {
       final found = await Isolate.run(() => ProjectScanner.projects(roots));
-      candidates = found.where((p) => p.iosBundleId == id || p.androidPackage == id).toList();
+      candidates = found
+          .where((proj) => windows ? Directory(p.join(proj.root, 'windows')).existsSync() : (proj.iosBundleId == id || proj.androidPackage == id))
+          .toList();
     } catch (_) {}
     if (mounted) setState(() => scanning = false);
   }
@@ -97,7 +104,7 @@ class _LinkProjectPanelState extends State<LinkProjectPanel> {
     try {
       final proj = FlutterProject.inspect(dir);
       final builds = [proj.iosBundleId, proj.androidPackage].whereType<String>().toList();
-      if (builds.isNotEmpty && !builds.contains(widget.app.bundleId)) {
+      if (widget.app.store != StoreProvider.microsoft && builds.isNotEmpty && !builds.contains(widget.app.bundleId)) {
         setState(() => error = 'That project builds ${builds.join(' and ')}, not ${widget.app.bundleId}.');
       } else {
         model.link(widget.app.id, dir);
@@ -161,7 +168,12 @@ class _LinkProjectPanelState extends State<LinkProjectPanel> {
                       child: _CandidateRow(project: c, onTap: () => _use(c.root)),
                     ),
                   if (!scanning && candidates.isEmpty)
-                    Text('No Flutter project in your project folders builds ${app.bundleId}.', style: TextStyle(color: t.text2)),
+                    Text(
+                      app.store == StoreProvider.microsoft
+                          ? 'No Flutter project with Windows support in your project folders.'
+                          : 'No Flutter project in your project folders builds ${app.bundleId}.',
+                      style: TextStyle(color: t.text2),
+                    ),
                   const SizedBox(height: 16),
                   Row(
                     children: [
@@ -311,12 +323,14 @@ class _ComposerFrame extends StatelessWidget {
 }
 
 class _ComposerHeader extends StatelessWidget {
-  const _ComposerHeader({required this.app, required this.link, required this.project, required this.platformTag, this.play = false});
+  const _ComposerHeader({required this.app, required this.link, required this.project, required this.platformTag, this.marks = const []});
   final StoreApp app;
   final ProjectLink link;
   final FlutterProject? project;
   final Widget platformTag;
-  final bool play;
+
+  /// The stores this release goes to, after the name.
+  final List<Widget> marks;
 
   @override
   Widget build(BuildContext context) {
@@ -346,7 +360,7 @@ class _ComposerHeader extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (play) ...[const SizedBox(width: 8), const PlayMark(size: 20)],
+                  for (final m in marks) ...[const SizedBox(width: 8), m],
                 ],
               ),
               const SizedBox(height: 4),
@@ -602,10 +616,14 @@ class _LaunchBar extends StatelessWidget {
     required this.onLaunch,
     this.error,
     this.color,
+    this.versionText,
   });
   final StoreApp app;
   final String version;
   final int number;
+
+  /// Shown after the name instead of "version (number)".
+  final String? versionText;
   final String destination;
   final bool rehearsal;
   final VoidCallback? onLaunch;
@@ -638,7 +656,7 @@ class _LaunchBar extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      ' $version ($number)',
+                      ' ${versionText ?? '$version ($number)'}',
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, fontFeatures: tabular),
                     ),
                   ],
@@ -788,13 +806,18 @@ class _CloudBuildCardState extends State<CloudBuildCard> {
     final r = repo;
     if (r == null) return;
     final privacy = PrivacyScope.of(context);
-    final ios = widget.target == CloudTarget.ios;
+    final where = privacy ? 'the repository' : r.fullName;
     final ok = await _confirm(
       context,
       title: "Set the repository's secrets?",
-      message: ios
-          ? "Release Desk puts this team's App Store Connect key into ${privacy ? 'the repository' : r.fullName}'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key."
-          : "Release Desk puts the upload key from android/key.properties into ${privacy ? 'the repository' : r.fullName}'s Actions secrets with the GitHub CLI. Anyone who can change its workflows can then sign with it.",
+      message: switch (widget.target) {
+        CloudTarget.ios =>
+          "Release Desk puts this team's App Store Connect key into $where's Actions secrets with the GitHub CLI. Anyone who can change its workflows can then use the key.",
+        CloudTarget.android =>
+          "Release Desk puts the upload key from android/key.properties into $where's Actions secrets with the GitHub CLI. Anyone who can change its workflows can then sign with it.",
+        CloudTarget.windows =>
+          "Release Desk puts this Partner Center client (tenant ID, seller ID, client ID and secret) into $where's Actions secrets with the GitHub CLI. Anyone who can change its workflows can then publish to the Store.",
+      },
       action: 'Set secrets',
     );
     if (!ok || !mounted) return;
@@ -850,7 +873,6 @@ class _CloudBuildCardState extends State<CloudBuildCard> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final ios = widget.target == CloudTarget.ios;
     final r = repo;
     final missing = secrets == null ? <String>[] : widget.target.secretNames.where((s) => !secrets!.contains(s)).toList();
     return Surface(
@@ -864,7 +886,9 @@ class _CloudBuildCardState extends State<CloudBuildCard> {
               children: [
                 const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.8)),
                 const SizedBox(width: 10),
-                Text('Looking at the repository…', style: TextStyle(color: t.text2)),
+                Flexible(
+                  child: Text('Looking at the repository…', style: TextStyle(color: t.text2)),
+                ),
               ],
             )
           else if (r != null) ...[
@@ -923,19 +947,28 @@ class _CloudBuildCardState extends State<CloudBuildCard> {
               hint: missing.isEmpty ? null : 'Missing: ${missing.join(', ')}',
               accessory: secrets == null || secretsOk
                   ? null
-                  : SoftButton(label: ios ? "Set from this team's key" : 'Set from android/key.properties', small: true, onPressed: busy ? null : _setSecrets),
+                  : SoftButton(
+                      label: switch (widget.target) {
+                        CloudTarget.ios => "Set from this team's key",
+                        CloudTarget.android => 'Set from android/key.properties',
+                        CloudTarget.windows => 'Set from Partner Center',
+                      },
+                      small: true,
+                      onPressed: busy ? null : _setSecrets,
+                    ),
             ),
             const SizedBox(height: 6),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(
-                    ios
-                        ? "Windows and Linux can't build iOS apps, so a GitHub macOS runner archives, signs and uploads; this computer does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones."
-                        : 'A GitHub Linux runner builds and signs the bundle; this computer downloads it and releases it on Play, so no Google sign-in goes to GitHub.',
-                    style: TextStyle(fontSize: 12, color: t.text2),
-                  ),
+                  child: Text(switch (widget.target) {
+                    CloudTarget.ios => "Windows and Linux can't build iOS apps, so a GitHub macOS runner archives, signs and uploads; this computer does the TestFlight steps. macOS minutes on private repositories cost more than Linux ones.",
+                    CloudTarget.android =>
+                      'A GitHub Linux runner builds and signs the bundle; this computer downloads it and releases it, so no store credential goes to GitHub.',
+                    CloudTarget.windows =>
+                      "${onWindows ? 'A GitHub Windows runner' : "This computer can't build Windows apps, so a GitHub Windows runner"} builds the MSIX with Microsoft's Store CLI and uploads it to a draft submission; Release Desk then writes What's new and sends it for certification.",
+                  }, style: TextStyle(fontSize: 12, color: t.text2)),
                 ),
                 busy
                     ? const Padding(
@@ -1450,6 +1483,8 @@ class _GroupToggle extends StatelessWidget {
 
 // MARK: - Android
 
+/// Ships an Android app bundle: one build to Google Play, AppGallery, or
+/// both, when the same package is on both stores.
 class PlayComposer extends StatefulWidget {
   const PlayComposer({super.key, required this.app, required this.link});
   final StoreApp app;
@@ -1476,6 +1511,13 @@ class _PlayComposerState extends State<PlayComposer> {
   bool cloudReady = false;
   String? launchError;
 
+  // Stores: the same package on Google Play and on AppGallery.
+  bool toPlay = true;
+  bool toAgc = false;
+  bool agcPhased = false;
+  double agcPercent = 10;
+  int agcDays = 7;
+
   int get buildNumber => int.tryParse(buildCtl.text) ?? 0;
 
   @override
@@ -1492,13 +1534,23 @@ class _PlayComposerState extends State<PlayComposer> {
     super.dispose();
   }
 
-  AppState _state(AppModel m) => m.apps[widget.app.id] ?? AppState();
+  String get _pkg => widget.app.bundleId;
+  StoreApp? _playApp(AppModel m) => m.app('play:$_pkg');
+  StoreApp? _agcApp(AppModel m) => m.app('agc:$_pkg');
+  bool _sendsPlay(AppModel m) => toPlay && _playApp(m) != null;
+  bool _sendsAgc(AppModel m) => toAgc && _agcApp(m) != null && m.agcAppIds['agc:$_pkg'] != null;
+  String _storeNames(AppModel m) => [if (_sendsPlay(m)) 'Google Play', if (_sendsAgc(m)) 'AppGallery'].join(' and ');
+
+  /// Play's state (tracks, version codes), whichever store's page this is.
+  AppState _state(AppModel m) => m.apps[_playApp(m)?.id ?? widget.app.id] ?? AppState();
 
   List<String> _locales(AppModel m) => (m.workspace.link(widget.app.id)?.recipe ?? widget.link.recipe).playLocalesOrDefault;
 
-  int _highest(AppState st) {
+  /// The highest version code on Play; nothing to beat when Play isn't chosen.
+  int _highest(AppModel m) {
+    if (!_sendsPlay(m)) return 0;
     var h = 0;
-    for (final tr in st.tracks) {
+    for (final tr in _state(m).tracks) {
       for (final r in tr.releases) {
         h = math.max(h, r.maxCode);
       }
@@ -1523,11 +1575,14 @@ class _PlayComposerState extends State<PlayComposer> {
       setState(() => loadError = describeError(e));
       return;
     }
-    if (!_state(model).detailed) await model.refreshApp(widget.app.id);
+    toPlay = _playApp(model) != null;
+    toAgc = _agcApp(model) != null && (widget.app.store == StoreProvider.huawei || widget.link.recipe.agcToo == true);
+    for (final a in [_playApp(model), _agcApp(model)].whereType<StoreApp>()) {
+      if (!(model.apps[a.id]?.detailed ?? false)) await model.refreshApp(a.id);
+    }
     if (!mounted) return;
-    final st = _state(model);
     version.text = project!.version;
-    buildCtl.text = '${math.max(_highest(st) + 1, project!.buildNumber)}';
+    buildCtl.text = '${math.max(_highest(model) + 1, project!.buildNumber)}';
     writeBuildNumber = widget.link.recipe.writeBuildNumber;
     track = widget.link.recipe.playTrack ?? 'internal';
     status = widget.link.recipe.playStatus ?? 'completed';
@@ -1547,28 +1602,45 @@ class _PlayComposerState extends State<PlayComposer> {
     _ => 'Full rollout',
   };
 
-  bool _canLaunch(AppModel model, AppState st) =>
+  bool _canLaunch(AppModel model) =>
       ready &&
       version.text.trim().isNotEmpty &&
       buildNumber > 0 &&
       model.activeRun(widget.app.id) == null &&
-      (rehearsal || buildNumber > _highest(st)) &&
-      (!onGitHub || (cloudReady && repo != null));
+      (rehearsal || buildNumber > _highest(model)) &&
+      (!onGitHub || (cloudReady && repo != null)) &&
+      (_sendsPlay(model) || _sendsAgc(model));
+
+  String _destination(AppModel model, String trackName) {
+    if (rehearsal) return 'Rehearsal · build${onGitHub ? ' on GitHub' : ' and check signing'}';
+    final parts = [
+      if (_sendsPlay(model)) 'Play $trackName · $_statusText',
+      if (_sendsAgc(model)) 'AppGallery review${agcPhased ? ' · phased ${agcPercent.round()}%' : ''}',
+    ];
+    return parts.isEmpty ? 'Choose a store' : '${onGitHub ? 'GitHub build' : 'Upload'} → ${parts.join(' + ')}';
+  }
 
   Future<void> _confirmAndLaunch() async {
     final model = ModelScope.read(context);
+    if (!_canLaunch(model)) return;
     final st = _state(model);
-    if (!_canLaunch(model, st)) return;
     final privacy = PrivacyScope.of(context);
     final name = privacy ? 'this app' : widget.app.name;
     final trackName = _tracks(st).where((x) => x.$1 == track).firstOrNull?.$2 ?? track;
     final where = onGitHub ? 'on a GitHub runner' : 'on this computer';
+    var msg = 'Builds the app bundle $where.';
+    if (_sendsPlay(model)) msg += " Releases it to Play's $trackName track as ${_statusText.toLowerCase()}.";
+    if (_sendsAgc(model)) {
+      msg += agcPhased
+          ? ' Uploads it to AppGallery and submits it for review, then releases it to ${agcPercent.round()}% of users over $agcDays days.'
+          : ' Uploads it to AppGallery and submits it for review; it goes live once approved.';
+    }
     final ok = await _confirm(
       context,
-      title: rehearsal ? 'Rehearse $name ${version.text.trim()} ($buildNumber)?' : 'Release $name ${version.text.trim()} ($buildNumber) on Google Play?',
-      message: rehearsal
-          ? 'Builds the app bundle $where${onGitHub ? '' : ' and checks its signature'}. Nothing is uploaded.'
-          : 'Builds the app bundle $where, uploads it and releases it to the $trackName track as ${_statusText.toLowerCase()}.',
+      title: rehearsal
+          ? 'Rehearse $name ${version.text.trim()} ($buildNumber)?'
+          : 'Release $name ${version.text.trim()} ($buildNumber) on ${_storeNames(model)}?',
+      message: rehearsal ? 'Builds the app bundle $where${onGitHub ? '' : ' and checks its signature'}. Nothing is uploaded.' : msg,
       action: rehearsal ? 'Rehearse' : 'Release',
     );
     if (ok && mounted) await _launch();
@@ -1576,13 +1648,16 @@ class _PlayComposerState extends State<PlayComposer> {
 
   Future<void> _launch() async {
     final model = ModelScope.read(context);
+    final sendsPlay = _sendsPlay(model), sendsAgc = _sendsAgc(model);
     model.updateRecipe(widget.app.id, (r) {
       r.playTrack = track;
       r.playStatus = status;
       r.writeBuildNumber = writeBuildNumber;
       r.androidBuildOn = onGitHub ? 'github' : null;
+      if (widget.app.store == StoreProvider.google) r.agcToo = sendsAgc;
     });
     final recipe = (model.workspace.link(widget.app.id)?.recipe ?? widget.link.recipe).copy()..writeBuildNumber = writeBuildNumber;
+    final agcId = model.agcAppIds['agc:$_pkg'];
     final plan = ReleasePlan(
       platform: ReleasePlatform.android,
       app: widget.app,
@@ -1593,7 +1668,13 @@ class _PlayComposerState extends State<PlayComposer> {
       whatsNew: notes.chosen(recipe.playLocalesOrDefault),
       rehearsal: rehearsal,
       cloud: onGitHub ? CloudBuild(repo!, CloudTarget.android) : null,
-      play: PlayTarget(track: track, status: status, userFraction: status == 'inProgress' ? rollout : null),
+      play: sendsPlay ? PlayTarget(track: track, status: status, userFraction: status == 'inProgress' ? rollout : null) : null,
+      appGallery: sendsAgc && agcId != null
+          ? AgcTarget(
+              appId: agcId,
+              release: agcPhased ? AgcRelease.phased(percent: agcPercent.roundToDouble(), days: agcDays) : const AgcRelease.afterReview(),
+            )
+          : null,
     );
     try {
       await model.launch(plan);
@@ -1608,11 +1689,15 @@ class _PlayComposerState extends State<PlayComposer> {
     final model = ModelScope.of(context);
     final t = context.tokens;
     final st = _state(model);
-    final highest = _highest(st);
-    final team = model.teamOfApp(widget.app.id);
+    final highest = _highest(model);
+    final playApp = _playApp(model), agcApp = _agcApp(model);
+    final sendsPlay = _sendsPlay(model), sendsAgc = _sendsAgc(model);
+    final playTeam = playApp == null ? null : model.teamOfApp(playApp.id);
+    final agcState = agcApp == null ? null : model.apps[agcApp.id];
     final tracks = _tracks(st);
     final current = st.tracks.where((x) => x.track == track && x.releases.isNotEmpty).firstOrNull?.releases.first;
     final trackName = tracks.where((x) => x.$1 == track).firstOrNull?.$2 ?? track;
+    final names = _storeNames(model);
     return _launchShortcut(
       onLaunch: _confirmAndLaunch,
       child: _ComposerFrame(
@@ -1621,12 +1706,14 @@ class _PlayComposerState extends State<PlayComposer> {
           app: widget.app,
           link: widget.link,
           project: project,
-          play: true,
-          platformTag: const Tag('Android · Google Play', icon: Icons.android_rounded),
+          marks: [if (playApp != null) const PlayMark(size: 20), if (agcApp != null) const AppGalleryMark(size: 20)],
+          platformTag: Tag('Android · ${names.isEmpty ? 'no store chosen' : names}', icon: Icons.android_rounded),
         ),
         banners: [
           if (loadError != null) Surface(child: WarningLine(loadError!)),
-          if (st.error != null && team != null) AccessCard(message: st.error!, team: team, retry: () => unawaited(model.refreshApp(widget.app.id))),
+          if (sendsPlay && st.error != null && playTeam != null)
+            AccessCard(message: st.error!, team: playTeam, retry: () => unawaited(model.refreshApp(playApp!.id))),
+          if (sendsAgc && agcState?.error != null) Surface(child: WarningLine(agcState!.error!)),
           if (project != null && !project!.hasUploadKey && !onGitHub)
             Surface(
               child: Row(
@@ -1664,7 +1751,9 @@ class _PlayComposerState extends State<PlayComposer> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  st.error != null && st.tracks.isEmpty
+                  !sendsPlay
+                      ? 'Use a version code above the last one on the store.'
+                      : st.error != null && st.tracks.isEmpty
                       ? "Play has not shown this app's version codes yet."
                       : (highest > 0 ? 'Highest on Play: $highest.' : 'No version code on Play yet.'),
                   style: TextStyle(fontSize: 12, color: buildNumber <= highest ? Colors.orange : t.text2),
@@ -1701,50 +1790,67 @@ class _PlayComposerState extends State<PlayComposer> {
                 ],
               ),
             ),
-          Surface(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const CardTitle('Track', Icons.alt_route_rounded),
-                const SizedBox(height: 14),
-                Segmented<String>(items: tracks, value: track, expand: true, onChanged: (v) => setState(() => track = v)),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Text('Rollout', style: TextStyle(fontSize: 13, color: t.text2)),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Segmented<String>(
-                        items: const [('completed', 'Full'), ('inProgress', 'Staged'), ('draft', 'Draft')],
-                        value: status,
-                        expand: true,
-                        onChanged: (v) => setState(() => status = v),
-                      ),
-                    ),
-                  ],
-                ),
-                if (status == 'inProgress')
+          // Which stores get this build, when the package is on more than one.
+          if (playApp != null && agcApp != null)
+            Surface(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CardTitle('Stores', Icons.layers_outlined),
+                  const SizedBox(height: 10),
+                  _StoreToggle(mark: const PlayMark(size: 14), title: 'Google Play', value: toPlay, onChanged: (v) => setState(() => toPlay = v)),
+                  _StoreToggle(mark: const AppGalleryMark(size: 14), title: 'Huawei AppGallery', value: toAgc, onChanged: (v) => setState(() => toAgc = v)),
+                  const SizedBox(height: 4),
+                  Text('One build goes to each store you pick.', style: TextStyle(fontSize: 12, color: t.text2)),
+                ],
+              ),
+            ),
+          if (sendsPlay)
+            Surface(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CardTitle('Track', Icons.alt_route_rounded),
+                  const SizedBox(height: 14),
+                  Segmented<String>(items: tracks, value: track, expand: true, onChanged: (v) => setState(() => track = v)),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
+                      Text('Rollout', style: TextStyle(fontSize: 13, color: t.text2)),
+                      const SizedBox(width: 12),
                       Expanded(
-                        child: Slider(value: rollout, min: 0.01, max: 0.99, divisions: 98, onChanged: (v) => setState(() => rollout = v)),
-                      ),
-                      SizedBox(
-                        width: 44,
-                        child: Text('${(rollout * 100).round()}%', style: const TextStyle(fontFeatures: tabular)),
+                        child: Segmented<String>(
+                          items: const [('completed', 'Full'), ('inProgress', 'Staged'), ('draft', 'Draft')],
+                          value: status,
+                          expand: true,
+                          onChanged: (v) => setState(() => status = v),
+                        ),
                       ),
                     ],
                   ),
-                if (current != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Now on this track: ${current.name.isEmpty ? current.versionCodes.join(', ') : current.name} · ${current.statusLabel}',
-                    style: TextStyle(fontSize: 12, color: t.text2),
-                  ),
+                  if (status == 'inProgress')
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Slider(value: rollout, min: 0.01, max: 0.99, divisions: 98, onChanged: (v) => setState(() => rollout = v)),
+                        ),
+                        SizedBox(
+                          width: 44,
+                          child: Text('${(rollout * 100).round()}%', style: const TextStyle(fontFeatures: tabular)),
+                        ),
+                      ],
+                    ),
+                  if (current != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Now on this track: ${current.name.isEmpty ? current.versionCodes.join(', ') : current.name} · ${current.statusLabel}',
+                      style: TextStyle(fontSize: 12, color: t.text2),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
+          if (sendsAgc) _agcCard(context, agcState?.agc),
           Surface(
             child: ToggleRow(
               title: 'Rehearsal',
@@ -1776,14 +1882,63 @@ class _PlayComposerState extends State<PlayComposer> {
           app: widget.app,
           version: version.text,
           number: buildNumber,
-          destination: rehearsal
-              ? 'Rehearsal · build${onGitHub ? ' on GitHub' : ' and check signing'}'
-              : '${onGitHub ? 'GitHub build' : 'Upload'} → $trackName · $_statusText',
+          destination: _destination(model, trackName),
           rehearsal: rehearsal,
           error: launchError,
           color: Palette.playGreen,
-          onLaunch: _canLaunch(model, st) ? _confirmAndLaunch : null,
+          onLaunch: _canLaunch(model) ? _confirmAndLaunch : null,
         ),
+      ),
+    );
+  }
+
+  /// How the AppGallery release goes out once it passes review.
+  Widget _agcCard(BuildContext context, AgcApp? now) {
+    final t = context.tokens;
+    return Surface(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const CardTitle('AppGallery', Icons.shopping_bag_outlined),
+          const SizedBox(height: 12),
+          Segmented<bool>(
+            items: const [(false, 'After review'), (true, 'Phased')],
+            value: agcPhased,
+            expand: true,
+            onChanged: (v) => setState(() => agcPhased = v),
+          ),
+          if (agcPhased) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Slider(value: agcPercent, min: 1, max: 99, divisions: 98, onChanged: (v) => setState(() => agcPercent = v.roundToDouble())),
+                ),
+                SizedBox(
+                  width: 44,
+                  child: Text('${agcPercent.round()}%', style: const TextStyle(fontFeatures: tabular)),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Text('Over $agcDays days', style: const TextStyle(fontSize: 13.5, fontFeatures: tabular)),
+                const SizedBox(width: 8),
+                _Stepper(onUp: () => setState(() => agcDays = math.min(60, agcDays + 1)), onDown: () => setState(() => agcDays = math.max(1, agcDays - 1))),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text('A phased release needs a version released before.', style: TextStyle(fontSize: 12, color: t.text2)),
+          ],
+          if (now != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Now: ${now.stateTitle}${now.versionOnShelf != null ? ' · ${now.versionOnShelf} on sale' : ''}',
+              style: TextStyle(fontSize: 12, color: t.text2),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text("App bundles up to 150 MB; AppGallery's App Signing has to be on for bundles.", style: TextStyle(fontSize: 12, color: t.text2)),
+        ],
       ),
     );
   }
@@ -1807,4 +1962,436 @@ class _PlayComposerState extends State<PlayComposer> {
       ),
     ],
   );
+}
+
+/// A store's mark, its name and a switch.
+class _StoreToggle extends StatelessWidget {
+  const _StoreToggle({required this.mark, required this.title, required this.value, required this.onChanged});
+  final Widget mark;
+  final String title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      mark,
+      const SizedBox(width: 10),
+      Expanded(
+        child: ToggleRow(title: title, value: value, onChanged: onChanged),
+      ),
+    ],
+  );
+}
+
+// MARK: - Windows
+
+/// Set by tests to show the Windows Ship screen as it is on Windows.
+bool? debugOnWindows;
+
+/// Only Windows builds MSIX packages; elsewhere the build runs on GitHub.
+bool get onWindows => debugOnWindows ?? Platform.isWindows;
+
+/// Ship a Flutter Windows app to the Microsoft Store. Microsoft's Store CLI
+/// builds the MSIX and uploads it to a draft submission, on this computer
+/// when it runs Windows or on a GitHub Windows runner; Release Desk then
+/// writes What's new and commits the submission for certification.
+class WindowsComposer extends StatefulWidget {
+  const WindowsComposer({super.key, required this.app, required this.link});
+  final StoreApp app;
+  final ProjectLink link;
+
+  @override
+  State<WindowsComposer> createState() => _WindowsComposerState();
+}
+
+class _WindowsComposerState extends State<WindowsComposer> {
+  static const _cliUrl = 'https://learn.microsoft.com/windows/apps/publish/msstore-dev-cli/overview';
+
+  FlutterProject? project;
+  String? loadError;
+  final version = TextEditingController();
+  int buildNumber = 1;
+  final notes = _Notes();
+  bool gradual = false;
+  double rollout = 10;
+  bool rehearsal = false;
+  bool ready = false;
+  String? launchError;
+  late bool onGitHub = !onWindows || widget.link.recipe.windowsBuildOn == 'github';
+  GitHubRepo? repo;
+  bool cloudReady = false;
+
+  /// msix_config in pubspec.yaml, written once by `msstore init`.
+  bool? msixConfig;
+  String? storeIdInPubspec;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    version.dispose();
+    notes.dispose();
+    super.dispose();
+  }
+
+  String get _storeId => widget.app.storeId;
+
+  AppState _state(AppModel m) => m.apps[widget.app.id] ?? AppState();
+
+  Recipe _recipe(AppModel m) => m.workspace.link(widget.app.id)?.recipe ?? widget.link.recipe;
+
+  /// Languages the Store listing has; What's new can only go into those.
+  List<String> _listing(AppModel m) => _state(m).ms?.listingLanguages ?? const [];
+
+  List<String> _locales(AppModel m) {
+    final listing = _listing(m);
+    return _recipe(m).msLocales ?? (listing.isEmpty ? const ['en-us'] : listing.take(2).toList());
+  }
+
+  void _checkProject() {
+    String text;
+    try {
+      text = File(p.join(widget.link.path, 'pubspec.yaml')).readAsStringSync();
+    } catch (_) {
+      text = '';
+    }
+    msixConfig = text.contains('msix_config:');
+    final line = text.split('\n').where((l) => l.contains('msstore_appId:')).firstOrNull;
+    storeIdInPubspec = line?.split(':').skip(1).join(':').trim().replaceAll(RegExp('^["\']+|["\']+\$'), '');
+  }
+
+  Future<void> _load() async {
+    final model = ModelScope.read(context);
+    try {
+      project = FlutterProject.inspect(widget.link.path);
+    } catch (e) {
+      setState(() => loadError = describeError(e));
+      return;
+    }
+    _checkProject();
+    if (!_state(model).detailed) await model.refreshApp(widget.app.id);
+    if (!mounted) return;
+    version.text = project!.version;
+    buildNumber = project!.buildNumber;
+    notes.fill(model.draft(widget.app.id));
+    final r = widget.link.recipe.msRollout;
+    if (r != null && r > 0) {
+      gradual = true;
+      rollout = r.clamp(1, 99).toDouble();
+    }
+    setState(() => ready = true);
+  }
+
+  void _notesChanged() {
+    ModelScope.read(context).saveDraft(widget.app.id, notes.texts);
+    setState(() {});
+  }
+
+  bool _canLaunch(AppModel model) =>
+      ready &&
+      project != null &&
+      msixConfig == true &&
+      version.text.trim().isNotEmpty &&
+      model.activeRun(widget.app.id) == null &&
+      (!onGitHub || (cloudReady && repo != null));
+
+  String get _destination {
+    final share = gradual ? ' · ${rollout.round()}%' : '';
+    if (onGitHub) return rehearsal ? 'Rehearsal · build on GitHub' : 'GitHub build → submission → certification$share';
+    return rehearsal ? 'Rehearsal · build the MSIX here' : 'MSIX build → submission → certification$share';
+  }
+
+  Future<void> _confirmAndLaunch() async {
+    final model = ModelScope.read(context);
+    if (!_canLaunch(model)) return;
+    final privacy = PrivacyScope.of(context);
+    final name = privacy ? 'this app' : widget.app.name;
+    final v = version.text.trim();
+    final builder = onGitHub ? 'A GitHub Windows runner' : "This computer, with Microsoft's Store CLI,";
+    final ok = await _confirm(
+      context,
+      title: rehearsal ? 'Rehearse $name $v?' : 'Send $name $v to the Microsoft Store?',
+      message: rehearsal
+          ? '$builder builds the MSIX. Nothing is uploaded.'
+          : '$builder builds the MSIX ($v.0) and uploads it to a new submission. Release Desk writes What\'s new and sends it for certification'
+                '${gradual ? ', rolling out to ${rollout.round()}% at first' : ''}.',
+      action: rehearsal ? 'Rehearse' : 'Send',
+    );
+    if (ok && mounted) await _launch();
+  }
+
+  Future<void> _launch() async {
+    final model = ModelScope.read(context);
+    final percent = gradual ? rollout.round() : 0;
+    model.updateRecipe(widget.app.id, (r) {
+      r.msRollout = percent;
+      if (onWindows) r.windowsBuildOn = onGitHub ? 'github' : null;
+    });
+    final recipe = _recipe(model).copy();
+    final plan = ReleasePlan(
+      platform: ReleasePlatform.windows,
+      app: widget.app,
+      projectRoot: project!.root,
+      version: version.text.trim(),
+      build: buildNumber,
+      recipe: recipe,
+      whatsNew: notes.chosen(_locales(model)),
+      rehearsal: rehearsal,
+      cloud: onGitHub ? CloudBuild(repo!, CloudTarget.windows) : null,
+      microsoft: MsTarget(appId: _storeId, rollout: percent),
+    );
+    try {
+      await model.launch(plan);
+      if (!rehearsal) model.saveDraft(widget.app.id, {});
+    } catch (e) {
+      setState(() => launchError = describeError(e));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final model = ModelScope.of(context);
+    final t = context.tokens;
+    final st = _state(model);
+    final listing = _listing(model);
+    final v = version.text.trim();
+    return _launchShortcut(
+      onLaunch: _confirmAndLaunch,
+      child: _ComposerFrame(
+        glowUrl: model.iconUrl(widget.app.id),
+        header: _ComposerHeader(
+          app: widget.app,
+          link: widget.link,
+          project: project,
+          marks: const [WindowsMark(size: 18)],
+          platformTag: const Tag('Windows · Microsoft Store', icon: Icons.desktop_windows_outlined),
+        ),
+        banners: [
+          if (loadError != null) Surface(child: WarningLine(loadError!)),
+          if (st.error != null) Surface(child: WarningLine(st.error!)),
+        ],
+        left: [
+          Surface(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const CardTitle('Release', Icons.tag_rounded),
+                const SizedBox(height: 14),
+                _BigNumberField(label: 'Version', controller: version, width: 220, onChanged: (_) => setState(() {})),
+                const SizedBox(height: 8),
+                Text(
+                  'The package version is ${v.isEmpty ? 'x.y.z' : v}.0. Each Store release needs a higher one than the last.',
+                  style: TextStyle(fontSize: 12, color: t.text2),
+                ),
+              ],
+            ),
+          ),
+          _storeSetupCard(context),
+          if (onGitHub)
+            CloudBuildCard(
+              app: widget.app,
+              link: widget.link,
+              target: CloudTarget.windows,
+              header: onWindows ? _buildOnHeader() : null,
+              onChanged: (r, ok) => setState(() {
+                repo = r;
+                cloudReady = ok;
+              }),
+            )
+          else
+            _localBuildCard(context),
+          Surface(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const CardTitle('Rollout', Icons.bar_chart_rounded),
+                const SizedBox(height: 12),
+                Segmented<bool>(
+                  items: const [(false, 'Everyone'), (true, 'Gradual')],
+                  value: gradual,
+                  expand: true,
+                  onChanged: (g) => setState(() => gradual = g),
+                ),
+                if (gradual) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Slider(value: rollout, min: 1, max: 99, divisions: 98, onChanged: (x) => setState(() => rollout = x.roundToDouble())),
+                      ),
+                      SizedBox(
+                        width: 44,
+                        child: Text('${rollout.round()}%', style: const TextStyle(fontFeatures: tabular)),
+                      ),
+                    ],
+                  ),
+                  Text('Raise or finish the rollout later in Partner Center.', style: TextStyle(fontSize: 12, color: t.text2)),
+                ],
+              ],
+            ),
+          ),
+          Surface(
+            child: ToggleRow(
+              title: 'Rehearsal',
+              caption: onGitHub ? 'Build the MSIX on GitHub without uploading it.' : 'Build the MSIX on this computer without uploading it.',
+              value: rehearsal,
+              onChanged: (x) => setState(() => rehearsal = x),
+            ),
+          ),
+        ],
+        right: [
+          _NotesCard(
+            title: "What's new",
+            icon: Icons.chat_bubble_rounded,
+            available: listing.isEmpty ? [for (final l in StoreLanguages.play) l.toLowerCase()] : listing,
+            locales: _locales(model),
+            notes: notes,
+            limit: 1500,
+            onChanged: _notesChanged,
+            onLocales: (l) {
+              model.updateRecipe(widget.app.id, (r) => r.msLocales = l);
+              setState(() {});
+            },
+            footer: 'Written into the new submission before it goes to certification, only in languages the Store listing already has.',
+          ),
+        ],
+        bar: _LaunchBar(
+          app: widget.app,
+          version: version.text,
+          number: buildNumber,
+          versionText: v.isEmpty ? '' : '$v.0',
+          destination: _destination,
+          rehearsal: rehearsal,
+          error: launchError,
+          color: Palette.msBlue,
+          onLaunch: _canLaunch(model) ? _confirmAndLaunch : null,
+        ),
+      ),
+    );
+  }
+
+  /// msix_config in pubspec.yaml, which `msstore init` writes once.
+  Widget _storeSetupCard(BuildContext context) {
+    final t = context.tokens;
+    final ok = msixConfig == true;
+    return Surface(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const CardTitle('Store setup in the project', Icons.inventory_2_outlined),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(ok ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded, size: 18, color: ok ? Palette.mint : t.text3),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('msix_config in pubspec.yaml', style: mono(12.5, color: t.text)),
+                    if (msixConfig == false) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        onGitHub
+                            ? 'Run this once in the project, then commit pubspec.yaml and push. It adds the msix package and the Store identity.'
+                            : 'Run this once in the project. It adds the msix package and the Store identity.',
+                        style: TextStyle(fontSize: 12, color: t.text2),
+                      ),
+                      const SizedBox(height: 6),
+                      _CommandLine('msstore init .'),
+                      const SizedBox(height: 6),
+                      LinkText('Install the Microsoft Store CLI', size: 12, onTap: () => launchUrl(Uri.parse(_cliUrl))),
+                    ] else if (storeIdInPubspec != null && storeIdInPubspec != _storeId) ...[
+                      const SizedBox(height: 4),
+                      Sensitive(
+                        radius: 4,
+                        child: Text('Its msstore_appId is $storeIdInPubspec, not $_storeId.', style: const TextStyle(fontSize: 12, color: Colors.orange)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              IconBtn(Icons.refresh_rounded, size: 16, tooltip: 'Check again', onPressed: () => setState(_checkProject)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// This computer runs Microsoft's Store CLI, signed in once with `msstore reconfigure`.
+  Widget _localBuildCard(BuildContext context) {
+    final t = context.tokens;
+    return Surface(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildOnHeader(),
+          const SizedBox(height: 10),
+          Text(
+            "Microsoft's Store CLI on this computer builds the MSIX (msstore package) and uploads it to a draft submission (msstore publish); "
+            "Release Desk then writes What's new and sends it for certification.",
+            style: TextStyle(fontSize: 12, color: t.text2),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Install the CLI and sign it in to Partner Center once. It asks for the tenant ID, seller ID, client ID and client secret.',
+            style: TextStyle(fontSize: 12, color: t.text2),
+          ),
+          const SizedBox(height: 6),
+          _CommandLine('msstore reconfigure'),
+          const SizedBox(height: 6),
+          LinkText('Install the Microsoft Store CLI', size: 12, onTap: () => launchUrl(Uri.parse(_cliUrl))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOnHeader() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const CardTitle('Build on', Icons.handyman_outlined),
+      const SizedBox(height: 12),
+      Segmented<bool>(
+        items: const [(false, 'This computer'), (true, 'GitHub Actions')],
+        value: onGitHub,
+        expand: true,
+        onChanged: (g) {
+          setState(() {
+            onGitHub = g;
+            if (!g) cloudReady = false;
+          });
+          ModelScope.read(context).updateRecipe(widget.app.id, (r) => r.windowsBuildOn = g ? 'github' : null);
+        },
+      ),
+    ],
+  );
+}
+
+/// A command to run in a terminal, with a button that copies it.
+class _CommandLine extends StatelessWidget {
+  const _CommandLine(this.command);
+  final String command;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 4, 4, 4),
+      decoration: BoxDecoration(color: t.chipFill, borderRadius: BorderRadius.circular(8)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SelectableText(command, style: mono(12.5, color: t.text)),
+          const SizedBox(width: 6),
+          IconBtn(Icons.copy_rounded, size: 14, tooltip: 'Copy', onPressed: () => unawaited(copyText(command))),
+        ],
+      ),
+    );
+  }
 }

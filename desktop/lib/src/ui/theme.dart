@@ -20,6 +20,8 @@ abstract final class Palette {
   static final ember = _rgb(1.0, 0.38, 0.36);
   static final playGreen = _rgb(0.0, 0.62, 0.45);
   static final googleBlue = _rgb(0.26, 0.52, 0.96);
+  static final agcRed = _rgb(0.8, 0.1, 0.16);
+  static final msBlue = _rgb(0.0, 0.47, 0.84);
   static final play = LinearGradient(colors: [_rgb(0.0, 0.82, 0.53), _rgb(0.0, 0.62, 0.95)], begin: Alignment.topLeft, end: Alignment.bottomRight);
   static final brand = LinearGradient(colors: [indigo, violet, cyan], begin: Alignment.topLeft, end: Alignment.bottomRight);
 }
@@ -675,9 +677,11 @@ class _LinkTextState extends State<LinkText> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (widget.icon != null) ...[Icon(widget.icon, size: widget.size + 1, color: c), const SizedBox(width: 5)],
-            Text(
-              widget.text,
-              style: TextStyle(fontSize: widget.size, color: c, decoration: hover ? TextDecoration.underline : null, decorationColor: c),
+            Flexible(
+              child: Text(
+                widget.text,
+                style: TextStyle(fontSize: widget.size, color: c, decoration: hover ? TextDecoration.underline : null, decorationColor: c),
+              ),
             ),
           ],
         ),
@@ -892,6 +896,44 @@ class PlayMark extends StatelessWidget {
   );
 }
 
+/// AppGallery: a red rounded square with a bag, drawn from shapes.
+class AppGalleryMark extends StatelessWidget {
+  const AppGalleryMark({super.key, this.size = 14});
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(color: Palette.agcRed, borderRadius: BorderRadius.circular(size * 0.26)),
+    alignment: Alignment.center,
+    child: Icon(Icons.shopping_bag_rounded, size: size * 0.62, color: Colors.white),
+  );
+}
+
+/// Microsoft Store: four squares, drawn from shapes.
+class WindowsMark extends StatelessWidget {
+  const WindowsMark({super.key, this.size = 14});
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final gap = size * 0.08, s = (size - gap) / 2;
+    Widget square(Color c) => Container(width: s, height: s, color: c);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [square(_rgb(0.95, 0.31, 0.13)), square(_rgb(0.5, 0.73, 0.0))]),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [square(_rgb(0.0, 0.64, 0.94)), square(_rgb(1.0, 0.73, 0.0))]),
+        ],
+      ),
+    );
+  }
+}
+
 class ProviderMark extends StatelessWidget {
   const ProviderMark(this.provider, {super.key, this.size = 14, this.color});
   final StoreProvider provider;
@@ -899,8 +941,12 @@ class ProviderMark extends StatelessWidget {
   final Color? color;
 
   @override
-  Widget build(BuildContext context) =>
-      provider == StoreProvider.apple ? Icon(Icons.apple, size: size, color: color ?? context.tokens.text) : PlayMark(size: size);
+  Widget build(BuildContext context) => switch (provider) {
+    StoreProvider.apple => Icon(Icons.apple, size: size, color: color ?? context.tokens.text),
+    StoreProvider.google => PlayMark(size: size),
+    StoreProvider.huawei => AppGalleryMark(size: size),
+    StoreProvider.microsoft => WindowsMark(size: size * 0.9),
+  };
 }
 
 /// Google's "G", drawn from four arcs in its colours.

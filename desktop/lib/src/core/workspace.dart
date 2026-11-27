@@ -10,9 +10,30 @@ import 'errors.dart';
 
 enum StoreProvider {
   apple,
-  google;
+  google,
+  huawei,
+  microsoft;
 
-  String get title => this == StoreProvider.apple ? 'Apple' : 'Google Play';
+  String get title => switch (this) {
+    StoreProvider.apple => 'Apple',
+    StoreProvider.google => 'Google Play',
+    StoreProvider.huawei => 'AppGallery',
+    StoreProvider.microsoft => 'Microsoft Store',
+  };
+
+  /// The prefix of app ids from this store ("" for App Store Connect, whose ids are Apple's).
+  String get appPrefix => switch (this) {
+    StoreProvider.apple => '',
+    StoreProvider.google => 'play:',
+    StoreProvider.huawei => 'agc:',
+    StoreProvider.microsoft => 'msstore:',
+  };
+
+  /// The store an app id belongs to.
+  static StoreProvider of(String appId) => values.where((p) => p.appPrefix.isNotEmpty && appId.startsWith(p.appPrefix)).firstOrNull ?? StoreProvider.apple;
+
+  /// Reads the name kept in workspace.json; unknown names are Apple's, as before.
+  static StoreProvider named(Object? name) => values.where((p) => p.name == name).firstOrNull ?? StoreProvider.apple;
 }
 
 String newId() {
@@ -23,25 +44,101 @@ String newId() {
 /// How Release Desk reaches a team. The secret part lives in the OS keychain
 /// under [secretKey]; only these ids go into workspace.json.
 class Credential {
-  const Credential.appStoreConnectKey({required String this.keyId, required String this.issuerId}) : kind = 'appStoreConnectKey', email = null;
-  const Credential.googleUser({required String this.email}) : kind = 'googleUser', keyId = null, issuerId = null;
+  const Credential.appStoreConnectKey({required String this.keyId, required String this.issuerId})
+    : kind = 'appStoreConnectKey',
+      email = null,
+      clientId = null,
+      tenantId = null,
+      sellerId = null;
+  const Credential.googleUser({required String this.email})
+    : kind = 'googleUser',
+      keyId = null,
+      issuerId = null,
+      clientId = null,
+      tenantId = null,
+      sellerId = null;
 
-  factory Credential.fromJson(Map<String, Object?> j) => j['kind'] == 'googleUser'
-      ? Credential.googleUser(email: j['email'] as String? ?? '')
-      : Credential.appStoreConnectKey(keyId: j['keyID'] as String? ?? '', issuerId: j['issuerID'] as String? ?? '');
+  /// AppGallery Connect API client (Connect API, team level); the key is the secret.
+  const Credential.agcClient({required String this.clientId})
+    : kind = 'agcClient',
+      keyId = null,
+      issuerId = null,
+      email = null,
+      tenantId = null,
+      sellerId = null;
+
+  /// A Microsoft Entra app added to Partner Center as Manager; the client secret is the secret.
+  const Credential.partnerCenter({required String this.tenantId, required String this.clientId, required String this.sellerId})
+    : kind = 'partnerCenter',
+      keyId = null,
+      issuerId = null,
+      email = null;
+
+  factory Credential.fromJson(Map<String, Object?> j) => switch (j['kind']) {
+    'googleUser' => Credential.googleUser(email: j['email'] as String? ?? ''),
+    'agcClient' => Credential.agcClient(clientId: j['clientID'] as String? ?? ''),
+    'partnerCenter' => Credential.partnerCenter(
+      tenantId: j['tenantID'] as String? ?? '',
+      clientId: j['clientID'] as String? ?? '',
+      sellerId: j['sellerID'] as String? ?? '',
+    ),
+    _ => Credential.appStoreConnectKey(keyId: j['keyID'] as String? ?? '', issuerId: j['issuerID'] as String? ?? ''),
+  };
 
   final String kind;
   final String? keyId;
   final String? issuerId;
   final String? email;
+  final String? clientId;
+  final String? tenantId;
+  final String? sellerId;
 
-  bool get isGoogle => kind == 'googleUser';
+  StoreProvider get store => switch (kind) {
+    'googleUser' => StoreProvider.google,
+    'agcClient' => StoreProvider.huawei,
+    'partnerCenter' => StoreProvider.microsoft,
+    _ => StoreProvider.apple,
+  };
 
-  String get secretKey => isGoogle ? 'google.$email' : 'asc.$keyId';
+  bool get isGoogle => store == StoreProvider.google;
 
-  String get summary => isGoogle ? 'Signed in as $email' : 'API key $keyId';
+  /// Stores where apps are added by package name when the API can't list them.
+  bool get takesPackages => store == StoreProvider.google || store == StoreProvider.huawei;
 
-  Map<String, Object?> toJson() => isGoogle ? {'kind': kind, 'email': email} : {'kind': kind, 'keyID': keyId, 'issuerID': issuerId};
+  String get secretKey => switch (store) {
+    StoreProvider.apple => 'asc.$keyId',
+    StoreProvider.google => 'google.$email',
+    StoreProvider.huawei => 'agc.$clientId',
+    StoreProvider.microsoft => 'ms.$clientId',
+  };
+
+  String get summary => switch (store) {
+    StoreProvider.apple => 'API key $keyId',
+    StoreProvider.google => 'Signed in as $email',
+    StoreProvider.huawei => 'API client $clientId',
+    StoreProvider.microsoft => 'Seller $sellerId',
+  };
+
+  Map<String, Object?> toJson() => switch (store) {
+    StoreProvider.apple => {'kind': kind, 'keyID': keyId, 'issuerID': issuerId},
+    StoreProvider.google => {'kind': kind, 'email': email},
+    StoreProvider.huawei => {'kind': kind, 'clientID': clientId},
+    StoreProvider.microsoft => {'kind': kind, 'tenantID': tenantId, 'clientID': clientId, 'sellerID': sellerId},
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is Credential &&
+      other.kind == kind &&
+      other.keyId == keyId &&
+      other.issuerId == issuerId &&
+      other.email == email &&
+      other.clientId == clientId &&
+      other.tenantId == tenantId &&
+      other.sellerId == sellerId;
+
+  @override
+  int get hashCode => Object.hash(kind, keyId, issuerId, email, clientId, tenantId, sellerId);
 }
 
 /// One developer team (Apple) or developer account (Play).
@@ -61,8 +158,9 @@ class Team {
   String? teamId;
   final Credential credential;
 
-  /// Play apps added by package name (Play has no list of a developer's
-  /// apps unless the Reporting API is on).
+  /// Play and AppGallery apps added by package name (Play has no list of a
+  /// developer's apps unless the Reporting API is on; an AppGallery API
+  /// client may not read projects).
   List<String> packages;
 
   Map<String, Object?> toJson() => {'id': id, 'name': name, 'teamID': teamId, 'credential': credential.toJson(), 'packages': packages};
@@ -74,7 +172,7 @@ class Account {
 
   factory Account.fromJson(Map<String, Object?> j) => Account(
     id: j['id'] as String?,
-    provider: j['provider'] == 'google' ? StoreProvider.google : StoreProvider.apple,
+    provider: StoreProvider.named(j['provider']),
     name: j['name'] as String? ?? '',
     email: j['email'] as String?,
     teams: (j['teams'] as List?)?.whereType<Map>().map((t) => Team.fromJson(t.cast<String, Object?>())).toList(),
@@ -103,6 +201,10 @@ class Recipe {
     this.androidBuildOn,
     this.playTrack,
     this.playStatus,
+    this.agcToo,
+    this.msLocales,
+    this.msRollout,
+    this.windowsBuildOn,
   }) : groupIds = groupIds ?? [],
        locales = locales ?? ['ar-SA', 'en-US'];
 
@@ -118,6 +220,10 @@ class Recipe {
     androidBuildOn: j['androidBuildOn'] as String?,
     playTrack: j['playTrack'] as String?,
     playStatus: j['playStatus'] as String?,
+    agcToo: j['agcToo'] as bool?,
+    msLocales: (j['msLocales'] as List?)?.whereType<String>().toList(),
+    msRollout: (j['msRollout'] as num?)?.toInt(),
+    windowsBuildOn: j['windowsBuildOn'] as String?,
   );
 
   String exportOptions;
@@ -148,6 +254,19 @@ class Recipe {
   String? playTrack;
   String? playStatus;
 
+  /// A Google Play app whose builds also go to AppGallery.
+  bool? agcToo;
+
+  /// Languages of a Microsoft Store release's What's new (listing keys like en-us).
+  List<String>? msLocales;
+
+  /// Microsoft Store package rollout percentage used last time (0 = everyone).
+  int? msRollout;
+
+  /// Windows: "github" to build the MSIX on GitHub Actions instead of this
+  /// computer (only Windows can build it here).
+  String? windowsBuildOn;
+
   Recipe copy() => Recipe.fromJson(toJson());
 
   Map<String, Object?> toJson() => {
@@ -162,6 +281,10 @@ class Recipe {
     'androidBuildOn': androidBuildOn,
     'playTrack': playTrack,
     'playStatus': playStatus,
+    'agcToo': agcToo,
+    'msLocales': msLocales,
+    'msRollout': msRollout,
+    'windowsBuildOn': windowsBuildOn,
   };
 }
 
@@ -335,8 +458,8 @@ class WorkspaceStore {
   }
 }
 
-/// Secrets: App Store Connect keys, Google sign-ins, the OAuth client and a
-/// GitHub token. Kept in the OS keychain, never in workspace.json.
+/// Secrets: App Store Connect keys, Google sign-ins, AppGallery and Partner
+/// Center client secrets, the OAuth client and a GitHub token. Kept in the OS keychain, never in workspace.json.
 abstract class SecretStore {
   Future<String?> read(String key);
   Future<void> write(String key, String value);

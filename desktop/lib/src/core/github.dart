@@ -284,18 +284,32 @@ class GitHubClient {
   void close() => _http.close();
 }
 
-/// The two cloud builds Release Desk can run on GitHub Actions. The file
-/// names, inputs, secrets and artifact are the same as the macOS app's, so
-/// both write identical workflows.
+/// The cloud builds Release Desk can run on GitHub Actions. The file names,
+/// inputs, secrets and artifact are the same as the macOS app's, so both
+/// write identical workflows.
 enum CloudTarget {
   ios,
-  android;
+  android,
+  windows;
 
-  String get workflowFile => this == CloudTarget.ios ? 'release-desk-ios.yml' : 'release-desk-android.yml';
+  String get workflowFile => switch (this) {
+    CloudTarget.ios => 'release-desk-ios.yml',
+    CloudTarget.android => 'release-desk-android.yml',
+    CloudTarget.windows => 'release-desk-windows.yml',
+  };
 
-  List<String> get secretNames => this == CloudTarget.ios
-      ? const ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY']
-      : const ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD'];
+  /// The runner GitHub starts, in words.
+  String get runner => switch (this) {
+    CloudTarget.ios => 'macOS',
+    CloudTarget.android => 'Linux',
+    CloudTarget.windows => 'Windows',
+  };
+
+  List<String> get secretNames => switch (this) {
+    CloudTarget.ios => const ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY'],
+    CloudTarget.android => const ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD'],
+    CloudTarget.windows => const ['MS_TENANT_ID', 'MS_SELLER_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET'],
+  };
 
   /// The artifact the Android workflow leaves for Release Desk to upload to Play.
   static const androidArtifact = 'release-desk-aab';
@@ -306,17 +320,17 @@ enum CloudTarget {
     String entitlements = 'ios/Runner/Runner.entitlements',
     String? teamId,
     String? flutterVersion,
-  }) {
-    return this == CloudTarget.ios
-        ? CloudWorkflow.iosYaml(
-            projectDir: projectDir,
-            exportOptions: exportOptions,
-            entitlements: entitlements,
-            teamId: teamId,
-            flutterVersion: flutterVersion,
-          )
-        : CloudWorkflow.androidYaml(projectDir: projectDir, flutterVersion: flutterVersion);
-  }
+  }) => switch (this) {
+    CloudTarget.ios => CloudWorkflow.iosYaml(
+      projectDir: projectDir,
+      exportOptions: exportOptions,
+      entitlements: entitlements,
+      teamId: teamId,
+      flutterVersion: flutterVersion,
+    ),
+    CloudTarget.android => CloudWorkflow.androidYaml(projectDir: projectDir, flutterVersion: flutterVersion),
+    CloudTarget.windows => CloudWorkflow.windowsYaml(projectDir: projectDir, flutterVersion: flutterVersion),
+  };
 }
 
 /// The workflows Release Desk adds to a project, ported line for line from
@@ -331,6 +345,12 @@ class CloudWorkflow {
       .replaceAll('__PROJECT_DIR__', projectDir)
       .replaceAll('__FLUTTER__', _flutter(flutterVersion))
       .replaceAll('__AAB_PREFIX__', projectDir == '.' ? '' : '$projectDir/');
+
+  /// Builds the Flutter Windows app as an MSIX with Microsoft's Store CLI
+  /// and uploads it to a draft submission in Partner Center. Release Desk
+  /// then writes the release notes and commits the submission.
+  static String windowsYaml({required String projectDir, String? flutterVersion}) =>
+      _windows.replaceAll('__PROJECT_DIR__', projectDir).replaceAll('__FLUTTER__', _flutter(flutterVersion));
 
   /// Builds the iOS app on a GitHub macOS runner the same way the local
   /// pipeline does, and uploads it. Release Desk then does the TestFlight
@@ -425,6 +445,79 @@ __FLUTTER__
       - name: Remove the key
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks" android/key.properties
+''';
+
+  static const _windows = r'''
+# Written by Release Desk. Builds the Windows app as an MSIX on a GitHub runner
+# and uploads it to a draft Microsoft Store submission; Release Desk then writes
+# What's new and sends the submission for certification.
+# Needs msix_config in pubspec.yaml (run `msstore init .` once and commit it), and
+# the repository secrets MS_TENANT_ID, MS_SELLER_ID, MS_CLIENT_ID and MS_CLIENT_SECRET.
+name: Release Desk Windows
+run-name: Release Desk Windows ${{ inputs.version }} (${{ inputs.build }}) ${{ inputs.release_desk_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (x.y.z); the package gets x.y.z.0
+        required: true
+      build:
+        description: Build number
+        required: true
+      rollout:
+        description: Package rollout percentage, 0 for everyone
+        required: false
+        default: "0"
+      upload:
+        description: Upload to Partner Center (false for a rehearsal)
+        required: false
+        default: "true"
+      release_desk_id:
+        description: Set by Release Desk to find this run
+        required: false
+        default: ""
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: __PROJECT_DIR__
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+__FLUTTER__
+          cache: true
+
+      - name: Set up the Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@v1.4
+
+      - name: Sign in to Partner Center
+        env:
+          TENANT: ${{ secrets.MS_TENANT_ID }}
+          SELLER: ${{ secrets.MS_SELLER_ID }}
+          CLIENT: ${{ secrets.MS_CLIENT_ID }}
+          SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+        run: msstore reconfigure --tenantId "$env:TENANT" --sellerId "$env:SELLER" --clientId "$env:CLIENT" --clientSecret "$env:SECRET"
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Build the MSIX
+        run: msstore package . --version "${{ inputs.version }}.0" --output release-desk-msix
+
+      - name: Upload to a draft submission
+        if: inputs.upload != 'false'
+        run: |
+          $publish = @("publish", ".", "-i", "release-desk-msix", "-v", "--noCommit")
+          if ([int]"${{ inputs.rollout }}" -gt 0) { $publish += @("--packageRolloutPercentage", "${{ inputs.rollout }}") }
+          msstore @publish
 ''';
 
   static const _ios = r'''

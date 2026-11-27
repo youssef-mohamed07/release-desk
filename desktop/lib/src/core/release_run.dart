@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
+import 'app_gallery.dart';
 import 'asc.dart';
 import 'errors.dart';
 import 'flutter_project.dart';
 import 'github.dart';
 import 'json.dart';
+import 'microsoft_store.dart';
 import 'play.dart';
 import 'shell.dart';
 import 'workspace.dart';
@@ -24,20 +26,27 @@ enum StepId {
   live('Live for testers'),
   bundle('Build app bundle'),
   checkSigning('Check signing'),
-  playRelease('Upload & release');
+  playRelease('Google Play'),
+  agcRelease('AppGallery'),
+  msixBuild('Build MSIX'),
+  msixUpload('Upload to Partner Center'),
+  msSubmit('Microsoft Store');
 
   const StepId(this.title);
   final String title;
 
-  /// iOS always builds on GitHub here: Windows and Linux cannot build iOS apps.
+  /// iOS always builds on GitHub here: Windows and Linux cannot build iOS
+  /// apps. Windows builds on this computer only when it runs Windows.
   static List<StepId> stepsFor(ReleasePlatform platform, {bool cloud = false}) => switch (platform) {
     ReleasePlatform.ios => const [prepare, cloudBuild, processing, notes, storeNotes, groups, review, live],
-    ReleasePlatform.android when cloud => const [prepare, cloudBuild, playRelease],
-    ReleasePlatform.android => const [prepare, bundle, checkSigning, playRelease],
+    ReleasePlatform.android when cloud => const [prepare, cloudBuild, playRelease, agcRelease],
+    ReleasePlatform.android => const [prepare, bundle, checkSigning, playRelease, agcRelease],
+    ReleasePlatform.windows when cloud => const [prepare, cloudBuild, msSubmit],
+    ReleasePlatform.windows => const [prepare, msixBuild, msixUpload, msSubmit],
   };
 }
 
-enum ReleasePlatform { ios, android }
+enum ReleasePlatform { ios, android, windows }
 
 enum StepStatus { pending, running, done, warning, skipped, failed }
 
@@ -86,6 +95,26 @@ class PlayTarget {
   final double? userFraction;
 }
 
+/// Where an Android release goes on AppGallery.
+class AgcTarget {
+  const AgcTarget({required this.appId, required this.release});
+
+  /// AppGallery's own app id (not the package name).
+  final String appId;
+  final AgcRelease release;
+}
+
+/// Where a Windows release goes in the Microsoft Store.
+class MsTarget {
+  const MsTarget({required this.appId, required this.rollout});
+
+  /// The Store ID, like 9NBLGGH4R315.
+  final String appId;
+
+  /// Package rollout percentage; 0 for everyone at once.
+  final int rollout;
+}
+
 /// A build made on a GitHub runner.
 class CloudBuild {
   const CloudBuild(this.repo, this.target);
@@ -110,6 +139,8 @@ class ReleasePlan {
     this.rehearsal = false,
     this.cloud,
     this.play,
+    this.appGallery,
+    this.microsoft,
     this.startAt,
   });
 
@@ -133,6 +164,12 @@ class ReleasePlan {
   final CloudBuild? cloud;
   final PlayTarget? play;
 
+  /// Android: also (or only) to Huawei AppGallery.
+  final AgcTarget? appGallery;
+
+  /// Windows: the Microsoft Store app.
+  final MsTarget? microsoft;
+
   /// Resume: skip the steps before this one.
   final StepId? startAt;
 
@@ -151,6 +188,8 @@ class ReleasePlan {
     rehearsal: rehearsal,
     cloud: cloud,
     play: play,
+    appGallery: appGallery,
+    microsoft: microsoft,
     startAt: clearStart ? null : (startAt ?? this.startAt),
   );
 }
@@ -162,9 +201,12 @@ typedef _StepBody = Future<StepState> Function();
 /// One release: the steps run in order and stop at the first failure. The
 /// UI listens to it.
 class ReleaseRun extends ChangeNotifier {
-  ReleaseRun({required this.plan, required Directory logsDir, this.apple, this.playClient, this.github})
+  ReleaseRun({required this.plan, required Directory logsDir, this.apple, this.playClient, this.appGallery, this.microsoft, this.github})
     : id = newId(),
-      steps = StepId.stepsFor(plan.platform, cloud: plan.cloud != null).map(RunStep.new).toList() {
+      steps = StepId.stepsFor(
+        plan.platform,
+        cloud: plan.cloud != null,
+      ).where((s) => (s != StepId.playRelease || plan.play != null) && (s != StepId.agcRelease || plan.appGallery != null)).map(RunStep.new).toList() {
     final stamp = DateTime.now().toIso8601String().split('.').first.replaceAll(':', '-');
     final safe = plan.app.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '-');
     logFile = File(p.join(logsDir.path, '$safe ${plan.version} (${plan.build}) $stamp.log'));
@@ -185,7 +227,7 @@ class ReleaseRun extends ChangeNotifier {
   String? failure;
   String? buildId;
 
-  /// The .aab this run built or downloaded.
+  /// The .aab (or MSIX) this run built or downloaded.
   String? artifact;
   String? playVersionCode;
 
@@ -195,6 +237,8 @@ class ReleaseRun extends ChangeNotifier {
 
   final AscClient? apple;
   final PlayClient? playClient;
+  final AppGalleryClient? appGallery;
+  final MicrosoftStoreClient? microsoft;
   final GitHubClient? github;
   void Function(ReleaseRun)? onFinish;
 
@@ -287,23 +331,54 @@ class ReleaseRun extends ChangeNotifier {
         LogKind.warning,
       );
     }
-    final List<(StepId, _StepBody)> order = plan.cloud?.target == CloudTarget.android
-        ? [(StepId.prepare, _prepareCloud), (StepId.cloudBuild, _cloudBuild), (StepId.playRelease, _releaseToPlay)]
-        : plan.platform == ReleasePlatform.ios
-        ? [
-            (StepId.prepare, _prepareCloud),
-            (StepId.cloudBuild, _cloudBuild),
-            (StepId.processing, _waitForProcessing),
-            (StepId.notes, _writeNotes),
-            (StepId.storeNotes, _writeStoreNotes),
-            (StepId.groups, _addToGroups),
-            (StepId.review, _submitReview),
-            (StepId.live, _waitUntilLive),
-          ]
-        : [(StepId.prepare, _prepareAndroid), (StepId.bundle, _buildBundle), (StepId.checkSigning, _checkSigning), (StepId.playRelease, _releaseToPlay)];
-    const remote = {StepId.processing, StepId.notes, StepId.storeNotes, StepId.groups, StepId.review, StepId.live, StepId.playRelease};
+    final cloud = plan.cloud != null;
+    final List<(StepId, _StepBody)> order = switch (plan.platform) {
+      ReleasePlatform.ios => [
+        (StepId.prepare, _prepareCloud),
+        (StepId.cloudBuild, _cloudBuild),
+        (StepId.processing, _waitForProcessing),
+        (StepId.notes, _writeNotes),
+        (StepId.storeNotes, _writeStoreNotes),
+        (StepId.groups, _addToGroups),
+        (StepId.review, _submitReview),
+        (StepId.live, _waitUntilLive),
+      ],
+      ReleasePlatform.android when cloud => [
+        (StepId.prepare, _prepareCloud),
+        (StepId.cloudBuild, _cloudBuild),
+        (StepId.playRelease, _releaseToPlay),
+        (StepId.agcRelease, _releaseToAppGallery),
+      ],
+      ReleasePlatform.android => [
+        (StepId.prepare, _prepareAndroid),
+        (StepId.bundle, _buildBundle),
+        (StepId.checkSigning, _checkSigning),
+        (StepId.playRelease, _releaseToPlay),
+        (StepId.agcRelease, _releaseToAppGallery),
+      ],
+      ReleasePlatform.windows when cloud => [(StepId.prepare, _prepareCloud), (StepId.cloudBuild, _cloudBuild), (StepId.msSubmit, _submitToMicrosoft)],
+      ReleasePlatform.windows => [
+        (StepId.prepare, _prepareWindows),
+        (StepId.msixBuild, _buildMsix),
+        (StepId.msixUpload, _uploadMsix),
+        (StepId.msSubmit, _submitToMicrosoft),
+      ],
+    };
+    const remote = {
+      StepId.processing,
+      StepId.notes,
+      StepId.storeNotes,
+      StepId.groups,
+      StepId.review,
+      StepId.live,
+      StepId.playRelease,
+      StepId.agcRelease,
+      StepId.msixUpload,
+      StepId.msSubmit,
+    };
     var resuming = plan.startAt != null;
     for (final (id, body) in order) {
+      if (!has(id)) continue;
       if (cancelToken.isCancelled) break;
       if (resuming && id != plan.startAt) {
         _set(id, const StepState.skipped('Done in the earlier run'));
@@ -338,7 +413,9 @@ class ReleaseRun extends ChangeNotifier {
     } else {
       log(
         plan.rehearsal
-            ? (artifact != null ? 'Rehearsal finished. The bundle is ready at $artifact.' : 'Rehearsal finished.')
+            ? (artifact != null
+                  ? 'Rehearsal finished. The ${plan.platform == ReleasePlatform.windows ? 'MSIX' : 'bundle'} is ready at $artifact.'
+                  : 'Rehearsal finished.')
             : 'Shipped ${plan.app.name} ${plan.version} (${plan.build}).',
         LogKind.success,
       );
@@ -371,22 +448,32 @@ class ReleaseRun extends ChangeNotifier {
     }
   }
 
-  Future<int> _highestOnPlay() async {
+  /// Before an Android build: Play takes the version code, AppGallery knows the app.
+  Future<void> _checkAndroidStores() async {
     final play = playClient;
-    if (play == null) return 0;
-    _detail(StepId.prepare, 'Checking Play');
-    final tracks = (await play.overview(plan.app.playPackage)).tracks;
-    var highest = 0;
-    for (final t in tracks) {
-      for (final r in t.releases) {
-        if (r.maxCode > highest) highest = r.maxCode;
+    if (play != null && plan.play != null) {
+      _detail(StepId.prepare, 'Checking Play');
+      final tracks = (await play.overview(plan.app.playPackage)).tracks;
+      var highest = 0;
+      for (final t in tracks) {
+        for (final r in t.releases) {
+          if (r.maxCode > highest) highest = r.maxCode;
+        }
+      }
+      log('Highest version code on Play: $highest');
+      if (plan.build <= highest && !plan.rehearsal) {
+        throw ReleaseError.precondition('Version code ${plan.build} is not above Play\'s highest ($highest).');
       }
     }
-    log('Highest version code on Play: $highest');
-    if (plan.build <= highest && !plan.rehearsal) {
-      throw ReleaseError.precondition('Version code ${plan.build} is not above Play\'s highest ($highest).');
+    final agc = appGallery, target = plan.appGallery;
+    if (agc != null && target != null) {
+      _detail(StepId.prepare, 'Checking AppGallery');
+      final app = await agc.app(target.appId, plan.app.bundleId);
+      log('AppGallery: ${app.name}, ${app.stateTitle.toLowerCase()}${app.versionOnShelf != null ? ', ${app.versionOnShelf} on sale' : ''}');
+      if (app.releaseState == 4 || app.releaseState == 5) {
+        log('A version is in review on AppGallery; submitting again may wait for that review.', LogKind.warning);
+      }
     }
-    return highest;
   }
 
   void _writePubspec(FlutterProject? project, {String suffix = ''}) {
@@ -404,10 +491,13 @@ class ReleaseRun extends ChangeNotifier {
     if (cloud == null || gh == null) throw const ReleaseError.precondition('No GitHub repository for this project');
     final who = await gh.login();
     log('GitHub ${cloud.repo.fullName} as $who, project folder ${cloud.repo.projectDir}');
-    if (cloud.target == CloudTarget.ios) {
-      await _ensureNewBuild();
-    } else {
-      await _highestOnPlay();
+    switch (cloud.target) {
+      case CloudTarget.ios:
+        await _ensureNewBuild();
+      case CloudTarget.windows:
+        await _checkMicrosoft();
+      case CloudTarget.android:
+        await _checkAndroidStores();
     }
     _detail(StepId.prepare, 'Checking the workflow');
     if (!await gh.hasWorkflow(cloud.repo, cloud.target.workflowFile)) {
@@ -439,6 +529,10 @@ class ReleaseRun extends ChangeNotifier {
     log('Starting ${cloud.target.workflowFile} on ${cloud.repo.fullName}@$ref${plan.rehearsal && ios ? ' (no upload)' : ''}');
     final inputs = {'version': plan.version, 'build': '${plan.build}', 'release_desk_id': marker};
     if (ios) inputs['upload'] = plan.rehearsal ? 'false' : 'true';
+    if (cloud.target == CloudTarget.windows) {
+      inputs['rollout'] = '${plan.microsoft?.rollout ?? 0}';
+      inputs['upload'] = plan.rehearsal ? 'false' : 'true';
+    }
     var run = await gh.dispatch(cloud.repo, cloud.target.workflowFile, ref: ref, inputs: inputs, marker: marker, cancel: cancelToken);
     cloudRunUrl = run.htmlUrl;
     log('Run ${run.id}: ${run.htmlUrl}');
@@ -471,7 +565,7 @@ class ReleaseRun extends ChangeNotifier {
         for (final st in s.steps) {
           if (st.status == 'in_progress') now = st.name;
         }
-        now ??= run.status == 'queued' ? 'Waiting for a ${ios ? 'macOS' : 'Linux'} runner' : run.status;
+        now ??= run.status == 'queued' ? 'Waiting for a ${cloud.target.runner} runner' : run.status;
         _detail(StepId.cloudBuild, '$now · ${DateTime.now().difference(began).inMinutes} min');
       }
     } catch (e) {
@@ -489,7 +583,11 @@ class ReleaseRun extends ChangeNotifier {
       }
       throw ReleaseError.precondition('The GitHub run ended ${run.conclusion ?? 'badly'}. Its log is above and on GitHub.');
     }
-    if (!ios) {
+    if (cloud.target == CloudTarget.windows) {
+      log(plan.rehearsal ? 'Built the MSIX on GitHub (not uploaded)' : 'Built the MSIX on GitHub and uploaded it to a draft submission', LogKind.success);
+      return StepState.done;
+    }
+    if (cloud.target == CloudTarget.android) {
       _detail(StepId.cloudBuild, 'Downloading the app bundle');
       final dir = Directory(p.join(Directory.systemTemp.path, 'ReleaseDesk-aab-${run.id}'));
       final files = await gh.downloadArtifact(cloud.repo, run.id, CloudTarget.androidArtifact, dir);
@@ -638,7 +736,7 @@ class ReleaseRun extends ChangeNotifier {
     log('Flutter project ${project.name}, pubspec ${project.version}+${project.buildNumber}, package ${project.androidPackage ?? '?'}');
     final pkg = project.androidPackage;
     if (pkg != null && pkg != plan.app.playPackage) {
-      throw ReleaseError.precondition('The project builds $pkg, but the Play app is ${plan.app.playPackage}.');
+      throw ReleaseError.precondition('The project builds $pkg, but the store app is ${plan.app.playPackage}.');
     }
     try {
       final out = await Shell.capture('flutter', ['--version', '--machine'], cwd: plan.projectRoot, cancel: cancelToken);
@@ -657,7 +755,7 @@ class ReleaseRun extends ChangeNotifier {
         throw const ReleaseError.precondition(text);
       }
     }
-    await _highestOnPlay();
+    await _checkAndroidStores();
     _writePubspec(project);
     return warning == null ? StepState.done : StepState.warning(warning);
   }
@@ -724,6 +822,166 @@ class ReleaseRun extends ChangeNotifier {
     playVersionCode = result.versionCode;
     log('Released ${plan.version} (${result.versionCode}) to ${target.track}', LogKind.success);
     return result.status == target.status ? StepState.done : StepState.warning('Saved as a ${result.status} release: this app is not published on Play yet.');
+  }
+
+  Future<StepState> _releaseToAppGallery() async {
+    final agc = appGallery, target = plan.appGallery, file = artifact;
+    if (agc == null || target == null || file == null) throw const ReleaseError.precondition('No AppGallery account or no app bundle');
+    _detail(StepId.agcRelease, 'Uploading');
+    await agc.upload(target.appId, File(file), log: (s) => log(s, LogKind.info, StepId.agcRelease), cancel: cancelToken);
+    if (plan.whatsNew.isNotEmpty) {
+      _detail(StepId.agcRelease, "What's new");
+      await agc.setWhatsNew(target.appId, plan.whatsNew);
+      log("What's new written for ${(plan.whatsNew.keys.toList()..sort()).join(', ')}");
+    }
+    _detail(StepId.agcRelease, 'Submitting for review');
+    await agc.submit(target.appId, target.release);
+    final r = target.release;
+    log(
+      r.isPhased
+          ? 'Submitted ${plan.version} (${plan.build}) for review, phased to ${r.percent!.toInt()}% over ${r.days} days'
+          : 'Submitted ${plan.version} (${plan.build}) for AppGallery review; it goes live once approved',
+      LogKind.success,
+    );
+    return StepState.done;
+  }
+
+  // MARK: Microsoft Store
+
+  /// The folder Microsoft's Store CLI packages into, in the project (the
+  /// same one the GitHub workflow uses).
+  static const msixFolder = 'release-desk-msix';
+
+  /// Before a Windows build: the project is set up for the Store, and Partner Center knows the app.
+  Future<void> _checkMicrosoft({bool local = false}) async {
+    String pubspec;
+    try {
+      pubspec = File(p.join(plan.projectRoot, 'pubspec.yaml')).readAsStringSync();
+    } catch (_) {
+      pubspec = '';
+    }
+    if (!pubspec.contains('msix_config:')) {
+      throw ReleaseError.precondition(
+        'pubspec.yaml has no msix_config yet. Run `msstore init .` once in the project (it adds the msix package and the Store identity)'
+        '${local ? '.' : ', commit it, and push.'}',
+      );
+    }
+    final target = plan.microsoft;
+    final line = pubspec.split('\n').where((l) => l.contains('msstore_appId:')).firstOrNull;
+    if (target != null && line != null && !line.contains(target.appId)) {
+      log("pubspec.yaml's msstore_appId is not ${target.appId}: ${line.trim()}", LogKind.warning);
+    }
+    final ms = microsoft;
+    if (ms == null || target == null) throw const ReleaseError.precondition('No Microsoft Store account for this app');
+    _detail(StepId.prepare, 'Checking Partner Center');
+    final app = await ms.application(target.appId);
+    if (app.lastSubmissionId == null) {
+      throw ReleaseError.precondition('${app.name} has never been published. Its first submission has to be made in Partner Center.');
+    }
+    log('Microsoft Store: ${app.name} (${app.id})${app.pendingSubmissionId != null ? ', a draft submission exists and will be replaced' : ''}');
+  }
+
+  /// Windows on this computer: the project has Windows support and the
+  /// Store CLI is installed (and signed in with `msstore reconfigure`).
+  Future<StepState> _prepareWindows() async {
+    final project = FlutterProject.inspect(plan.projectRoot);
+    log('Flutter project ${project.name}, pubspec ${project.version}+${project.buildNumber}');
+    if (!Directory(p.join(plan.projectRoot, 'windows')).existsSync()) {
+      throw const ReleaseError.precondition('This project has no windows folder. Add Windows support with `flutter create --platforms=windows .`.');
+    }
+    try {
+      final out = await Shell.capture('flutter', ['--version', '--machine'], cwd: plan.projectRoot, cancel: cancelToken);
+      final j = J.decode(out.substring(out.indexOf('{').clamp(0, out.length)));
+      log('Flutter ${j['frameworkVersion'].string ?? '?'}, Dart ${j['dartSdkVersion'].string ?? '?'}');
+    } on ReleaseError catch (e) {
+      if (e.isCancelled) rethrow;
+      throw ReleaseError.precondition('Flutter is not available here: ${e.message}');
+    }
+    try {
+      final v = (await Shell.capture('msstore', ['--version'], cwd: plan.projectRoot, cancel: cancelToken)).trim();
+      log('Microsoft Store CLI ${v.split('\n').last.trim()}');
+    } on ReleaseError catch (e) {
+      if (e.isCancelled) rethrow;
+      throw const ReleaseError.precondition(
+        "Microsoft's Store CLI (msstore) is not installed. Install it, run `msstore reconfigure` once with your Partner Center details, and try again.",
+      );
+    }
+    await _checkMicrosoft(local: true);
+    _writePubspec(project);
+    return StepState.done;
+  }
+
+  Future<StepState> _buildMsix() async {
+    final args = ['package', '.', '--version', '${plan.version}.0', '--output', msixFolder];
+    _detail(StepId.msixBuild, 'msstore package');
+    log('\$ msstore ${args.join(' ')}');
+    final code = await Shell.run('msstore', args, cwd: plan.projectRoot, cancel: cancelToken, onLine: _output(StepId.msixBuild));
+    if (code != 0) throw ReleaseError.command('msstore package', code, '');
+    final dir = Directory(p.join(plan.projectRoot, msixFolder));
+    final files = dir.existsSync()
+        ? dir
+              .listSync(recursive: true)
+              .whereType<File>()
+              .where((f) => RegExp(r'\.(msix|msixupload|msixbundle)$', caseSensitive: false).hasMatch(f.path))
+              .toList()
+        : <File>[];
+    if (files.isEmpty) throw ReleaseError.precondition('msstore made no MSIX in ${dir.path}.');
+    artifact = files.first.path;
+    log('${p.basename(files.first.path)} · ${formatBytes(files.first.lengthSync())}', LogKind.success);
+    return StepState.done;
+  }
+
+  Future<StepState> _uploadMsix() async {
+    final rollout = plan.microsoft?.rollout ?? 0;
+    final args = [
+      'publish',
+      '.',
+      '-i',
+      msixFolder,
+      '-v',
+      '--noCommit',
+      if (rollout > 0) ...['--packageRolloutPercentage', '$rollout'],
+    ];
+    _detail(StepId.msixUpload, 'msstore publish');
+    log('\$ msstore ${args.join(' ')}');
+    final code = await Shell.run('msstore', args, cwd: plan.projectRoot, cancel: cancelToken, onLine: _output(StepId.msixUpload));
+    if (code != 0) throw ReleaseError.command('msstore publish', code, '');
+    log('Uploaded to a draft submission in Partner Center', LogKind.success);
+    return StepState.done;
+  }
+
+  Future<StepState> _submitToMicrosoft() async {
+    final ms = microsoft, target = plan.microsoft;
+    if (ms == null || target == null) throw const ReleaseError.precondition('No Microsoft Store account for this app');
+    final app = await ms.application(target.appId);
+    final sub = app.pendingSubmissionId;
+    if (sub == null) {
+      throw ReleaseError.precondition('Partner Center has no draft submission from the ${plan.cloud != null ? 'GitHub run' : 'upload'}.');
+    }
+    if (plan.whatsNew.isNotEmpty) {
+      _detail(StepId.msSubmit, "What's new");
+      for (final line in await ms.setReleaseNotes(target.appId, sub, plan.whatsNew)) {
+        log("What's new $line");
+      }
+    }
+    _detail(StepId.msSubmit, 'Committing');
+    await ms.commit(target.appId, sub);
+    log('Submission $sub committed');
+    for (var i = 0; i < 90; i++) {
+      await cancelToken.sleep(const Duration(seconds: 20));
+      final s = await ms.status(target.appId, sub);
+      _detail(StepId.msSubmit, s.status);
+      if (s.status == 'CommitStarted' || s.status == 'PendingCommit') continue;
+      if (s.status.endsWith('Failed')) {
+        for (final e in s.errors) {
+          log(e, LogKind.error);
+        }
+        throw ReleaseError.precondition('Partner Center: ${s.status}${s.errors.isEmpty ? '' : '. ${s.errors.join('; ')}'}');
+      }
+      log('Partner Center: ${s.status}. Certification usually takes up to three business days.', LogKind.success);
+      return StepState.done;
+    }
+    return const StepState.warning('Partner Center is still processing the commit. Check the submission in Partner Center.');
   }
 
   @override

@@ -5,9 +5,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/asc.dart';
 import '../core/store_languages.dart';
+import '../core/workspace.dart';
 import 'app_model.dart';
 import 'overview.dart';
 import 'play_pages.dart';
+import 'store_pages.dart';
 import 'theme.dart';
 
 class AppPage extends StatefulWidget {
@@ -32,6 +34,8 @@ class _AppPageState extends State<AppPage> {
     final model = ModelScope.of(context);
     final app = model.app(widget.appId);
     if (app == null) return const Center(child: Text('Loading app…'));
+    if (app.store == StoreProvider.huawei) return AgcAppPage(app: app);
+    if (app.store == StoreProvider.microsoft) return MsAppPage(app: app);
     if (app.isPlay) return PlayAppPage(app: app);
     final state = model.apps[app.id] ?? AppState();
     return PageFrame(

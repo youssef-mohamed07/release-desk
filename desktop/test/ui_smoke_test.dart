@@ -1,5 +1,6 @@
 // Renders every screen with made-up data and fails on any layout or build
 // error. With RD_SHOTS=<folder> it also writes a PNG of each screen there.
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -7,11 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' hide StepState;
 import 'package:path/path.dart' as p;
+import 'package:release_desk/src/core/app_gallery.dart';
 import 'package:release_desk/src/core/asc.dart';
 import 'package:release_desk/src/core/flutter_project.dart';
 import 'package:release_desk/src/core/github.dart';
+import 'package:release_desk/src/core/microsoft_store.dart';
 import 'package:release_desk/src/core/play.dart';
-import 'package:release_desk/src/ui/theme.dart' show debugFontFamilyFallback, debugHomeOverride;
+import 'package:release_desk/src/ui/theme.dart' show ToggleRow, debugFontFamilyFallback, debugHomeOverride;
 import 'package:release_desk/src/ui/overview.dart' show debugUserNameOverride;
 import 'package:release_desk/src/core/release_run.dart';
 import 'package:release_desk/src/core/workspace.dart';
@@ -19,6 +22,7 @@ import 'package:release_desk/src/ui/app_model.dart';
 import 'package:release_desk/src/ui/command_palette.dart';
 import 'package:release_desk/src/ui/connect.dart';
 import 'package:release_desk/src/ui/root.dart';
+import 'package:release_desk/src/ui/ship.dart' show debugOnWindows;
 
 /// RD_PROMO: screens for the promo video, with a stand-in person and a ready release.
 final promo = Platform.environment['RD_PROMO'] != null;
@@ -43,6 +47,16 @@ class FakeModel extends AppModel {
     workflow: target == CloudTarget.ios,
     secrets: target == CloudTarget.ios ? {'ASC_KEY_ID', 'ASC_ISSUER_ID', if (promo) 'ASC_PRIVATE_KEY'} : <String>{},
   );
+
+  @override
+  Future<List<({String package, String name})>> verifyAppGallery(String clientId, String secret, List<String> packages) async => [
+    (package: 'com.example.atlas', name: 'Atlas Notes'),
+  ];
+
+  @override
+  Future<List<MsApp>> verifyMicrosoft(String tenantId, String clientId, String secret) async => [
+    MsApp(id: '9NBLGGH4R315', name: 'Atlas Notes', packageIdentityName: 'Example.AtlasNotes'),
+  ];
 
   @override
   Future<List<String>> commitsSince(FlutterProject project, DateTime? since) async => [
@@ -96,7 +110,8 @@ AscBuild _build(String n, String state, {String? internal, String? external, Str
 
 Future<FakeModel> _seed(Directory dir) async {
   final project = Directory(p.join(dir.path, 'Developer', 'atlas', 'mobile'))..createSync(recursive: true);
-  File(p.join(project.path, 'pubspec.yaml')).writeAsStringSync('name: atlas_notes\nversion: 2.4.0+57\n');
+  File(p.join(project.path, 'pubspec.yaml')).writeAsStringSync('name: atlas_notes\nversion: 2.4.0+57\n\nmsix_config:\n  msstore_appId: 9NBLGGH4R315\n');
+  Directory(p.join(project.path, 'windows')).createSync();
   Directory(p.join(project.path, 'android', 'app')).createSync(recursive: true);
   File(p.join(project.path, 'android', 'app', 'build.gradle.kts')).writeAsStringSync('applicationId = "com.example.atlas"\n');
 
@@ -112,12 +127,29 @@ Future<FakeModel> _seed(Directory dir) async {
     credential: const Credential.googleUser(email: 'dev@example.com'),
     packages: ['com.example.atlas'],
   );
+  final huawei = Team(
+    name: 'AppGallery',
+    credential: const Credential.agcClient(clientId: '1234567890123456789'),
+    packages: ['com.example.atlas'],
+  );
+  final microsoft = Team(
+    name: 'Northwind Store',
+    teamId: '12345678',
+    credential: const Credential.partnerCenter(tenantId: 'tenant', clientId: 'client', sellerId: '12345678'),
+  );
   m.workspace
     ..accounts = [
       Account(provider: StoreProvider.apple, name: 'Work Apple ID', teams: [apple]),
       Account(provider: StoreProvider.google, name: 'dev@example.com', email: 'dev@example.com', teams: [google]),
+      Account(provider: StoreProvider.huawei, name: 'Huawei developer account', teams: [huawei]),
+      Account(provider: StoreProvider.microsoft, name: 'Partner Center', teams: [microsoft]),
     ]
-    ..links = [ProjectLink(appId: '1001', path: project.path), ProjectLink(appId: 'play:com.example.atlas', path: project.path)]
+    ..links = [
+      ProjectLink(appId: '1001', path: project.path),
+      ProjectLink(appId: 'play:com.example.atlas', path: project.path),
+      ProjectLink(appId: 'agc:com.example.atlas', path: project.path),
+      ProjectLink(appId: 'msstore:9NBLGGH4R315', path: project.path),
+    ]
     ..runs = [
       RunRecord(
         id: 'r1',
@@ -153,6 +185,37 @@ Future<FakeModel> _seed(Directory dir) async {
     m.bindAppToTeam(a.id, apple.id);
   }
   m.bindAppToTeam('play:com.example.atlas', google.id);
+  m.teams[huawei.id] = TeamState()..apps = [const StoreApp(id: 'agc:com.example.atlas', name: 'Atlas Notes', bundleId: 'com.example.atlas')];
+  m.bindAppToTeam('agc:com.example.atlas', huawei.id);
+  m.agcAppIds['agc:com.example.atlas'] = '101234567';
+  m.teams[microsoft.id] = TeamState()..apps = [const StoreApp(id: 'msstore:9NBLGGH4R315', name: 'Atlas Notes', bundleId: 'Example.AtlasNotes')];
+  m.bindAppToTeam('msstore:9NBLGGH4R315', microsoft.id);
+  m.apps['agc:com.example.atlas'] = AppState()
+    ..detailed = true
+    ..agc = const AgcApp(
+      appId: '101234567',
+      package: 'com.example.atlas',
+      name: 'Atlas Notes',
+      version: '2.4.0',
+      versionOnShelf: '2.3.9',
+      releaseState: 5,
+      reviewNote: 'Add a screenshot of the Arabic layout.',
+      newFeatures: {'en-US': 'Faster search on the notes list.', 'ar': 'بحث أسرع في قائمة الملاحظات.'},
+    );
+  m.apps['msstore:9NBLGGH4R315'] = AppState()
+    ..detailed = true
+    ..ms = MsApp(
+      id: '9NBLGGH4R315',
+      name: 'Atlas Notes',
+      packageIdentityName: 'Example.AtlasNotes',
+      firstPublished: DateTime.utc(2025, 3, 1),
+      lastSubmissionId: '1152921504621243619',
+      pendingSubmissionId: '1152921504621243620',
+      lastStatus: 'Published',
+      pendingStatus: 'PendingCommit',
+      listingLanguages: ['ar-sa', 'en-us'],
+      releaseNotes: {'en-us': 'Faster search on the notes list.'},
+    );
   final groups = [
     AscBetaGroup(id: 'g1', name: 'Team', isInternal: true, allBuilds: true, publicLinkEnabled: false, testerCount: 4),
     AscBetaGroup(
@@ -255,6 +318,8 @@ ReleaseRun _run(FakeModel m, Directory dir, RunPhase phase) {
   return run;
 }
 
+String jsonEncodeWorkspace(AppModel m) => jsonEncode(m.workspace.toJson());
+
 void main() {
   final shots = Platform.environment['RD_SHOTS'];
 
@@ -326,6 +391,27 @@ void main() {
       expect(find.textContaining('Production included'), findsOneWidget);
       m.go(const AppRoute.activity());
       await shoot(tester, '$tag-07-activity');
+      m.go(const AppRoute.app('agc:com.example.atlas'));
+      await shoot(tester, '$tag-14-appgallery');
+      expect(find.text('Update in review'), findsWidgets);
+      expect(find.text('Review notes'), findsOneWidget);
+      expect(find.text('Arabic  ·  ar'), findsOneWidget);
+      m.go(const AppRoute.app('msstore:9NBLGGH4R315'));
+      await shoot(tester, '$tag-15-microsoft');
+      expect(find.text('Listing languages'), findsOneWidget);
+      expect(find.text('Published submission'), findsOneWidget);
+      m.go(const AppRoute.ship('agc:com.example.atlas'));
+      await shoot(tester, '$tag-16-ship-appgallery');
+      expect(find.text('Huawei AppGallery'), findsOneWidget);
+      expect(find.text('After review'), findsOneWidget);
+      expect(find.textContaining('Play Internal · Full rollout + AppGallery review'), findsOneWidget);
+      m.go(const AppRoute.ship('msstore:9NBLGGH4R315'));
+      await shoot(tester, '$tag-17-ship-windows');
+      expect(find.text('msix_config in pubspec.yaml'), findsOneWidget);
+      expect(find.text('Build on GitHub'), findsOneWidget);
+      expect(find.text('This computer'), findsNothing);
+      expect(find.textContaining('Secrets MS_TENANT_ID'), findsOneWidget);
+      expect(find.text('Set from Partner Center'), findsOneWidget);
       m.privacy = true;
       m.go(const AppRoute.overview());
       await shoot(tester, '$tag-08-privacy');
@@ -392,6 +478,130 @@ void main() {
     await tearDownApp(tester);
   });
 
+  testWidgets('the Android Ship screen sends one build to Play, AppGallery or both', (tester) async {
+    final (m, _) = await setUp(tester);
+    Future<void> settle() async {
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(tester.takeException(), isNull);
+    }
+
+    final agcSwitch = find.descendant(of: find.widgetWithText(ToggleRow, 'Huawei AppGallery'), matching: find.byType(Switch));
+    final playSwitch = find.descendant(of: find.widgetWithText(ToggleRow, 'Google Play'), matching: find.byType(Switch));
+    // Scrolls a control to the middle, clear of the floating launch bar, and taps it.
+    Future<void> tapInView(Finder f) async {
+      await Scrollable.ensureVisible(tester.element(f.first), alignment: 0.4);
+      await tester.pump();
+      await tester.tap(f.first);
+      await settle();
+    }
+
+    // From the Play page, AppGallery is off until it is turned on, and then stays on.
+    m.go(const AppRoute.ship('play:com.example.atlas'));
+    await settle();
+    expect(find.text('After review'), findsNothing);
+    await tapInView(agcSwitch);
+    expect(find.text('After review'), findsOneWidget);
+    expect(find.textContaining('Play Internal · Full rollout + AppGallery review'), findsOneWidget);
+    await tapInView(playSwitch);
+    expect(find.text('Track'), findsNothing);
+    expect(find.text('Use a version code above the last one on the store.'), findsOneWidget);
+    expect(find.textContaining('Upload → AppGallery review'), findsOneWidget);
+    await tapInView(find.text('Phased'));
+    expect(find.text('Over 7 days'), findsOneWidget);
+    expect(find.textContaining('AppGallery review · phased 10%'), findsOneWidget);
+    await tapInView(agcSwitch);
+    expect(find.textContaining('Choose a store'), findsOneWidget);
+    await tearDownApp(tester);
+  });
+
+  testWidgets('the Windows Ship screen builds here on Windows', (tester) async {
+    debugOnWindows = true;
+    addTearDown(() => debugOnWindows = null);
+    final (m, _) = await setUp(tester);
+    m.go(const AppRoute.ship('msstore:9NBLGGH4R315'));
+    await shoot(tester, 'dark-20-ship-windows-local');
+    expect(find.text('This computer'), findsOneWidget);
+    expect(find.text('msstore reconfigure'), findsOneWidget);
+    expect(find.text('Install the Microsoft Store CLI'), findsOneWidget);
+    expect(find.textContaining('MSIX build → submission → certification'), findsOneWidget);
+    expect(find.text(' 2.4.0.0'), findsOneWidget);
+    await Scrollable.ensureVisible(tester.element(find.text('Gradual')), alignment: 0.4);
+    await tester.pump();
+    await tester.tap(find.text('Gradual'));
+    await tester.pump();
+    expect(find.textContaining('certification · 10%'), findsOneWidget);
+    await Scrollable.ensureVisible(tester.element(find.text('GitHub Actions')), alignment: 0.4);
+    await tester.pump();
+    await tester.tap(find.text('GitHub Actions'));
+    await shoot(tester, 'dark-21-ship-windows-github');
+    expect(find.text('msstore reconfigure'), findsNothing);
+    expect(find.text('Set from Partner Center'), findsOneWidget);
+    expect(m.workspace.link('msstore:9NBLGGH4R315')!.recipe.windowsBuildOn, 'github');
+    await tearDownApp(tester);
+  });
+
+  testWidgets('AppGallery and Partner Center connect through the form', (tester) async {
+    final (m, _) = await setUp(tester, empty: true);
+    final ctx = tester.element(find.byType(RootView));
+    Finder field(String hint) => find.byWidgetPredicate((w) => w is TextField && w.decoration?.hintText == hint);
+    Future<void> type(String hint, String text) async {
+      await tester.ensureVisible(field(hint));
+      await tester.enterText(field(hint), text);
+      await tester.pump();
+    }
+
+    Future<void> press(String label) async {
+      await tester.ensureVisible(find.text(label).last);
+      await tester.tap(find.text(label).last);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    showConnectDialog(ctx, StoreProvider.huawei);
+    await shoot(tester, 'dark-18-connect-appgallery');
+    expect(find.text('AppGallery Connect API client'), findsOneWidget);
+    await type('e.g. 1234567890123456789', '1234567890123456789');
+    await type('Key', 'agc-secret');
+    await type('com.example.app, com.example.other', 'com.example.atlas');
+    await type('e.g. Huawei developer account', 'Huawei developer account');
+    await type('e.g. Client team', 'AppGallery');
+    await press('Verify');
+    expect(find.text('It works · 1 app'), findsOneWidget);
+    expect(find.text('Atlas Notes · com.example.atlas'), findsOneWidget);
+    await press('Connect');
+    expect(m.workspace.accounts.single.provider, StoreProvider.huawei);
+    final agc = m.workspace.accounts.single.teams.single;
+    expect(agc.credential, const Credential.agcClient(clientId: '1234567890123456789'));
+    expect(agc.packages, ['com.example.atlas']);
+    expect(await (m.secrets as MemorySecretStore).read('agc.1234567890123456789'), 'agc-secret');
+    expect(jsonEncodeWorkspace(m), isNot(contains('agc-secret')));
+
+    showConnectDialog(ctx, StoreProvider.microsoft);
+    await shoot(tester, 'dark-19-connect-microsoft');
+    expect(find.text('Seller ID'), findsOneWidget);
+    // Verify waits for every field.
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Verify')).onPressed, isNull);
+    final ids = field('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx');
+    await tester.ensureVisible(ids.first);
+    await tester.enterText(ids.first, 'tenant-1');
+    await tester.enterText(ids.last, 'client-1');
+    await type('Client secret', 'ms-secret');
+    await type('e.g. 12345678', '87654321');
+    await type('e.g. Partner Center', 'Partner Center');
+    await type('e.g. Client team', 'Northwind Store');
+    await press('Verify');
+    expect(find.text('It works · 1 app'), findsOneWidget);
+    await press('Connect');
+    final ms = m.workspace.accounts.last.teams.single;
+    expect(m.workspace.accounts.last.provider, StoreProvider.microsoft);
+    expect(ms.credential, const Credential.partnerCenter(tenantId: 'tenant-1', clientId: 'client-1', sellerId: '87654321'));
+    expect(ms.teamId, '87654321');
+    expect(await (m.secrets as MemorySecretStore).read('ms.client-1'), 'ms-secret');
+    expect(jsonEncodeWorkspace(m), isNot(contains('ms-secret')));
+    await tearDownApp(tester);
+  });
+
   testWidgets('launch console in every phase', (tester) async {
     final (m, dir) = await setUp(tester);
     for (final phase in [RunPhase.running, RunPhase.succeeded, RunPhase.failed]) {
@@ -411,6 +621,12 @@ void main() {
     await shoot(tester, 'dark-11-connect-apple');
     await tester.tap(find.text('Google Play').last);
     await shoot(tester, 'dark-12-connect-google');
+    await tester.tap(find.text('AppGallery').last);
+    await tester.pump();
+    expect(find.text('AppGallery Connect API client'), findsOneWidget);
+    await tester.tap(find.text('Microsoft Store').last);
+    await tester.pump();
+    expect(find.text('Partner Center'), findsWidgets);
     Navigator.of(ctx).pop();
     await tester.pump();
     await tearDownApp(tester);

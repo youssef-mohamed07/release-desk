@@ -7,9 +7,11 @@ import 'asc_key.dart';
 import 'errors.dart';
 import 'http_util.dart';
 import 'json.dart';
+import 'workspace.dart';
 
-/// A store app. App Store apps use Apple's numeric id; Play apps use
-/// `play:<package>` so both can live in one list.
+/// A store app. App Store apps use Apple's numeric id; the other stores
+/// prefix theirs (`play:<package>`, `agc:<package>`, `msstore:<Store ID>`)
+/// so all can live in one list.
 class StoreApp {
   const StoreApp({required this.id, required this.name, required this.bundleId, this.sku = '', this.primaryLocale = ''});
 
@@ -20,6 +22,11 @@ class StoreApp {
   final String primaryLocale;
 
   bool get isPlay => id.startsWith('play:');
+
+  StoreProvider get store => StoreProvider.of(id);
+
+  /// The id without its store prefix: the package, or the Microsoft Store ID.
+  String get storeId => id.substring(store.appPrefix.length);
   String get playPackage => isPlay ? id.substring(5) : bundleId;
 
   StoreApp copyWith({String? name, String? primaryLocale}) =>

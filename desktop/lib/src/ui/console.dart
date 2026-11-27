@@ -22,6 +22,10 @@ IconData stepIcon(StepId id) => switch (id) {
   StepId.bundle => Icons.inventory_2_outlined,
   StepId.checkSigning => Icons.draw_outlined,
   StepId.playRelease => Icons.rocket_launch_outlined,
+  StepId.agcRelease => Icons.shopping_bag_outlined,
+  StepId.msixBuild => Icons.inventory_2_outlined,
+  StepId.msixUpload => Icons.cloud_upload_outlined,
+  StepId.msSubmit => Icons.storefront_outlined,
 };
 
 Color stepTone(StepState s) => switch (s.status) {
@@ -138,6 +142,13 @@ class _LaunchConsoleState extends State<LaunchConsole> {
           '${plan.play!.track} · ${plan.play!.status == 'inProgress' ? '${((plan.play!.userFraction ?? 0) * 100).round()}%' : plan.play!.status}',
           Icons.alt_route_rounded,
         ),
+      if (plan.appGallery != null)
+        _DarkChip(
+          plan.appGallery!.release.isPhased ? 'AppGallery · phased ${plan.appGallery!.release.percent!.toInt()}%' : 'AppGallery · after review',
+          Icons.shopping_bag_outlined,
+        ),
+      if (plan.microsoft != null)
+        _DarkChip(plan.microsoft!.rollout > 0 ? 'Microsoft Store · ${plan.microsoft!.rollout}%' : 'Microsoft Store', Icons.storefront_outlined),
       if (plan.startAt != null) const _DarkChip('Resumed', Icons.refresh_rounded),
       if (plan.cloud != null) const _DarkChip('GitHub Actions', Icons.cloud_outlined),
       if (plan.submitForReview && plan.groups.any((g) => !g.isInternal) && !plan.rehearsal) const _DarkChip('Beta review', Icons.verified_user_outlined),
@@ -245,7 +256,7 @@ class _LaunchConsoleState extends State<LaunchConsole> {
     }
     add(
       SoftButton(
-        label: run.artifact == null ? 'Show log' : 'Show bundle',
+        label: run.artifact == null ? 'Show log' : (run.plan.platform == ReleasePlatform.windows ? 'Show MSIX' : 'Show bundle'),
         icon: Icons.folder_outlined,
         onDark: true,
         onPressed: () => Shell.reveal(run.artifact ?? run.logFile.path),
@@ -861,6 +872,10 @@ class LogRow extends StatelessWidget {
     StepId.bundle: 288.0,
     StepId.checkSigning: 310.0,
     StepId.playRelease: 198.0,
+    StepId.agcRelease: 356.0,
+    StepId.msixBuild: 288.0,
+    StepId.msixUpload: 230.0,
+    StepId.msSubmit: 205.0,
   };
 
   @override

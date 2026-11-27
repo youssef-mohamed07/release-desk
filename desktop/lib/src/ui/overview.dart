@@ -11,6 +11,7 @@ import 'app_model.dart';
 import 'console.dart';
 import 'play_pages.dart';
 import 'sidebar.dart';
+import 'store_pages.dart';
 import 'theme.dart';
 
 /// Set by demos and screenshot tests to greet a stand-in person.
@@ -300,7 +301,65 @@ class _AppCardState extends State<AppCard> {
     final run = model.activeRun(app.id);
     final big = TextStyle(fontSize: 14, fontWeight: FontWeight.w700, fontFeatures: tabular, color: t.text);
     Widget body;
-    if (app.isPlay) {
+    if (app.store == StoreProvider.huawei) {
+      final a = st?.agc;
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(a?.version ?? ' ', style: big)),
+              const AppGalleryMark(size: 12),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 40,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                children: [
+                  if (a != null) ToneText(a.stateTitle, agcTone(a)),
+                  if (a?.versionOnShelf != null) Text('${a!.versionOnShelf} on sale', style: TextStyle(fontSize: 12, color: t.text2)),
+                  if (a == null && st?.error != null) Text('AppGallery answered with a problem', style: TextStyle(fontSize: 12, color: waitingColor)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    } else if (app.store == StoreProvider.microsoft) {
+      final m = st?.ms;
+      final s = m?.pendingStatus ?? m?.lastStatus;
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  app.storeId,
+                  style: mono(13, weight: FontWeight.w600, color: t.text),
+                ),
+              ),
+              const WindowsMark(size: 11),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 40,
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: s != null
+                  ? ToneText(describeMicrosoft(s).label, describeMicrosoft(s).tone)
+                  : Text(m?.firstPublished == null ? 'Not published yet' : 'Published', style: TextStyle(fontSize: 12, color: t.text2)),
+            ),
+          ),
+        ],
+      );
+    } else if (app.isPlay) {
       PlayRelease? top;
       for (final tr in st?.tracks ?? const <PlayTrack>[]) {
         for (final r in tr.releases) {
@@ -613,7 +672,7 @@ class TeamPage extends StatelessWidget {
           ],
         ),
         if (state?.error != null) ...[const SizedBox(height: 18), WarningLine(state!.error!)],
-        if (team.credential.isGoogle) ...[const SizedBox(height: 18), PackagesEditor(team: team)],
+        if (team.credential.takesPackages) ...[const SizedBox(height: 18), PackagesEditor(team: team)],
         const SizedBox(height: 22),
         AppGrid(apps: state?.apps ?? const []),
       ],
@@ -621,7 +680,7 @@ class TeamPage extends StatelessWidget {
   }
 }
 
-/// The Play apps a developer account shows, by package name.
+/// The Play or AppGallery apps a developer account shows, by package name.
 class PackagesEditor extends StatefulWidget {
   const PackagesEditor({super.key, required this.team});
   final Team team;
@@ -768,28 +827,44 @@ class _WelcomeViewState extends State<WelcomeView> {
                         ),
                       ),
                       const SizedBox(height: 30),
-                      Wrap(
-                        spacing: 18,
-                        runSpacing: 18,
-                        alignment: WrapAlignment.center,
-                        children: [
-                          ProviderTile(
-                            title: 'App Store Connect',
-                            subtitle: 'API key (.p8) per team',
-                            icon: const Icon(Icons.apple, size: 28, color: Colors.white),
-                            onTap: () => model.connect(StoreProvider.apple),
-                          ),
-                          ProviderTile(
-                            title: 'Google Play',
-                            subtitle: 'Sign in with your Google account',
-                            icon: const PlayMark(size: 28),
-                            onTap: () => model.connect(StoreProvider.google),
-                          ),
-                        ],
+                      // Two by two: four stores in two rows.
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 660),
+                        child: Wrap(
+                          spacing: 18,
+                          runSpacing: 18,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            ProviderTile(
+                              title: 'App Store Connect',
+                              subtitle: 'API key (.p8) per team',
+                              icon: const Icon(Icons.apple, size: 28, color: Colors.white),
+                              onTap: () => model.connect(StoreProvider.apple),
+                            ),
+                            ProviderTile(
+                              title: 'Google Play',
+                              subtitle: 'Sign in with your Google account',
+                              icon: const PlayMark(size: 28),
+                              onTap: () => model.connect(StoreProvider.google),
+                            ),
+                            ProviderTile(
+                              title: 'AppGallery',
+                              subtitle: 'API client from AppGallery Connect',
+                              icon: const AppGalleryMark(size: 28),
+                              onTap: () => model.connect(StoreProvider.huawei),
+                            ),
+                            ProviderTile(
+                              title: 'Microsoft Store',
+                              subtitle: 'Microsoft Entra app in Partner Center',
+                              icon: const WindowsMark(size: 26),
+                              onTap: () => model.connect(StoreProvider.microsoft),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 30),
                       Text(
-                        'Keys go to your system keychain. Nothing leaves this computer except calls to Apple, Google and GitHub.',
+                        'Keys go to your system keychain. Nothing leaves this computer except calls to the stores and GitHub.',
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 13.5, color: Colors.white.withValues(alpha: 0.35)),
                       ),

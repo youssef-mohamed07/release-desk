@@ -43,7 +43,7 @@ class _CommandPaletteState extends State<CommandPalette> {
   List<_Item> _items(AppModel model) {
     final all = <_Item>[];
     for (final (account: account, team: team) in model.allTeams) {
-      final store = account.provider == StoreProvider.apple ? 'App Store' : 'Google Play';
+      final store = account.provider == StoreProvider.apple ? 'App Store' : account.provider.title;
       for (final app in model.teams[team.id]?.apps ?? const []) {
         all.add(
           _Item(
@@ -99,6 +99,20 @@ class _CommandPaletteState extends State<CommandPalette> {
         subtitle: 'Sign in with a Google account',
         icon: Icons.play_arrow_rounded,
         run: (m) => m.connect(StoreProvider.google),
+      ),
+      _Item(
+        id: 'connect-huawei',
+        title: 'Connect AppGallery',
+        subtitle: 'Add a Huawei team with its API client',
+        icon: Icons.shopping_bag_rounded,
+        run: (m) => m.connect(StoreProvider.huawei),
+      ),
+      _Item(
+        id: 'connect-microsoft',
+        title: 'Connect Microsoft Store',
+        subtitle: 'Add a Partner Center account',
+        icon: Icons.storefront_rounded,
+        run: (m) => m.connect(StoreProvider.microsoft),
       ),
       _Item(id: 'refresh', title: 'Refresh everything', subtitle: 'Ask both stores again', icon: Icons.refresh_rounded, run: (m) => unawaited(m.refreshAll())),
       _Item(

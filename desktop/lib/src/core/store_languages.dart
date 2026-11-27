@@ -17,16 +17,18 @@ abstract final class StoreLanguages {
     'te-IN', 'th', 'tr-TR', 'uk', 'ur', 'uz', 'vi', 'zh-CN', 'zh-HK', 'zh-TW', 'zu',
   ];
 
-  /// "Arabic (Saudi Arabia)" for "ar-SA", in English. Unknown codes come back as they are.
+  /// "Arabic (Saudi Arabia)" for "ar-SA" (or the Microsoft Store's "ar-sa"),
+  /// in English. Unknown codes come back as they are.
   static String name(String code) {
     final id = code == 'iw-IL' ? 'he-IL' : (code == 'fil' ? 'fil-PH' : code);
-    final whole = _special[id];
-    if (whole != null) return whole;
+    for (final e in _special.entries) {
+      if (e.key.toLowerCase() == id.toLowerCase()) return e.value;
+    }
     final parts = id.split('-');
-    final language = _languages[parts.first == 'iw' ? 'he' : parts.first];
+    final language = _languages[parts.first == 'iw' ? 'he' : parts.first.toLowerCase()];
     if (language == null) return code;
     if (parts.length < 2) return language;
-    return '$language (${_regions[parts[1]] ?? parts[1]})';
+    return '$language (${_regions[parts[1].toUpperCase()] ?? parts[1]})';
   }
 
   static bool isRightToLeft(String code) => const ['ar', 'he', 'iw', 'fa', 'ur'].any((l) => code == l || code.startsWith('$l-'));

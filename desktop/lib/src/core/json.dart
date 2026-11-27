@@ -66,6 +66,14 @@ class J {
     final s = string;
     return s == null ? null : DateTime.tryParse(s);
   }
+
+  /// A copy with the value at a key path replaced, making objects on the way.
+  J setting(List<String> path, Object? to) {
+    if (path.isEmpty) return J(to);
+    final o = Map<String, Object?>.of(map);
+    o[path.first] = J(o[path.first]).setting(path.sublist(1), to).value;
+    return J(o);
+  }
 }
 
 String base64UrlNoPad(List<int> bytes) => base64Url.encode(bytes).replaceAll('=', '');

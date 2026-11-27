@@ -19,7 +19,13 @@ class ReleaseError implements Exception {
   factory ReleaseError.api(int status, String path, List<String> messages) {
     final google = path.contains('googleapis.com') || path.contains('androidpublisher') || path == 'oauth token';
     final github = path.startsWith('github.com') || path.contains('api.github.com');
-    final service = google ? 'Google Play' : (github ? 'GitHub' : 'App Store Connect');
+    final service = path.contains('huawei.com') || path.contains('myhuaweicloud')
+        ? 'AppGallery'
+        : path.contains('microsoft') || path.contains('windows.net')
+        ? 'Microsoft Store'
+        : google
+        ? 'Google Play'
+        : (github ? 'GitHub' : 'App Store Connect');
     var shown = path;
     final uri = Uri.tryParse(path);
     if (uri != null && uri.hasScheme && uri.host.isNotEmpty) shown = uri.path;

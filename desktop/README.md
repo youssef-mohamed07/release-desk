@@ -1,10 +1,10 @@
 # Release Desk for Windows and Linux
 
-The Windows and Linux version of Release Desk, written in Flutter. Like the macOS app in the root of this repository, it ships mobile apps to **App Store Connect / TestFlight** and **Google Play**: accounts and teams kept apart, every app, build, tester group and Play track in one place, and a launch console that shows each step of a release as it runs.
+The Windows and Linux version of Release Desk, written in Flutter. Like the macOS app in the root of this repository, it ships apps to **App Store Connect / TestFlight**, **Google Play**, **Huawei AppGallery** and the **Microsoft Store**: accounts and teams kept apart, every app, build, tester group and Play track in one place, and a launch console that shows each step of a release as it runs.
 
 ![Overview](../docs/desktop-overview.jpg)
 
-It uses the same GitHub Actions workflows as the macOS app (`release-desk-ios.yml`, `release-desk-android.yml`, with the same inputs, secret names and `release-desk-aab` artifact), so a project set up from one app works from the other.
+It uses the same GitHub Actions workflows as the macOS app (`release-desk-ios.yml`, `release-desk-android.yml`, `release-desk-windows.yml`, with the same inputs, secret names and `release-desk-aab` artifact), so a project set up from one app works from the other.
 
 ## Install
 
@@ -38,6 +38,8 @@ The Windows and Linux builds are made by the `Desktop (Windows and Linux)` workf
 | Build iOS on this computer | No. Apple's tools only run on macOS |
 | See Google Play apps and tracks | Yes |
 | Ship Android to Play | Yes, built on this computer (Flutter, Android SDK and Java) **or** on GitHub Actions (a Linux runner builds and signs the bundle; this computer downloads it and releases it on Play) |
+| Ship Android to AppGallery | Yes, the same build as Play (or on its own): uploaded, processed, What's new written and submitted for review, released after approval or phased |
+| Ship Windows to the Microsoft Store | On Windows, built here with Microsoft's Store CLI (`msstore package`, `msstore publish --noCommit`) **or** on GitHub Actions (a Windows runner); then What's new is written and the submission committed. On Linux, GitHub Actions only |
 
 **Not in this version yet** (the macOS app has them): App Store review submission, the new app wizard, Google Play service accounts (only Google sign-in here), dropping key files on the window, notifications, and the `rdesk` command line tool.
 
@@ -53,6 +55,10 @@ The Windows and Linux builds are made by the `Desktop (Windows and Linux)` workf
 4. In Release Desk choose **Connect → Google Play**, give it that file (one in `~/Downloads` is found for you), then **Sign in with Google**. Your browser opens; after you allow access it returns to a one-time listener on `127.0.0.1` (OAuth for installed apps, with PKCE).
 
 Apps come from the Reporting API. If it doesn't list them yet, name their packages in the Connect dialog, or add them later on the Play team's page.
+
+**Huawei AppGallery.** In AppGallery Connect go to Users and permissions → API key → Connect API and create an API client (Project N/A, Administrator or App administrator role). Choose **Connect → AppGallery**, paste the client ID and key, and name your package names if the client may not read projects.
+
+**Microsoft Store.** In Partner Center add a Microsoft Entra app with the Manager role (Account settings → User management) and make a key. Choose **Connect → Microsoft Store** and give the tenant ID, client ID, client secret and seller ID. The project needs `msix_config` in `pubspec.yaml` (run `msstore init .` once). To build on a Windows computer, install the [Microsoft Store CLI](https://learn.microsoft.com/windows/apps/publish/msstore-dev-cli/overview) and run `msstore reconfigure` once; GitHub builds use the secrets `MS_TENANT_ID`, `MS_SELLER_ID`, `MS_CLIENT_ID` and `MS_CLIENT_SECRET`.
 
 **GitHub Actions builds.** Install the [GitHub CLI](https://cli.github.com) and sign in with `gh auth login`. Release Desk uses a token you save with **Use a token…** on the Ship screen, or else the GitHub CLI's token; setting repository secrets always goes through the GitHub CLI, so it must be signed in. The **Build on GitHub** checklist then:
 
@@ -79,7 +85,7 @@ macOS minutes on private repositories cost more than Linux minutes.
 - Run logs: the `Logs` folder in the same folder.
 - Keys, Google sign-ins, the OAuth client and a saved GitHub token: on Windows a file encrypted with DPAPI for your Windows user (`%APPDATA%\Release Desk\Release Desk\flutter_secure_storage.dat`); on Linux the Secret Service, through libsecret.
 
-Nothing leaves your computer except calls to Apple, Google and GitHub.
+Nothing leaves your computer except calls to Apple, Google, Huawei, Microsoft and GitHub.
 
 ## Build from source
 

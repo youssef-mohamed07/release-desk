@@ -22,8 +22,10 @@ Future<void> showConnectDialog(BuildContext context, StoreProvider provider) => 
   builder: (_) => ConnectDialog(provider: provider),
 );
 
-/// Connect a store team: an App Store Connect API key, or a Google account
-/// with Play Console access. Checks with the store before anything is saved.
+/// Connect a store team: an App Store Connect API key, a Google account
+/// with Play Console access, an AppGallery Connect API client, or a
+/// Microsoft Entra app in Partner Center. Checks with the store before
+/// anything is saved; secrets go to the system keychain.
 class ConnectDialog extends StatefulWidget {
   const ConnectDialog({super.key, required this.provider});
   final StoreProvider provider;
@@ -59,7 +61,16 @@ class _ConnectDialogState extends State<ConnectDialog> {
   bool appsUnavailable = false;
   final packages = TextEditingController();
 
+  // AppGallery and the Microsoft Store
+  final clientId = TextEditingController();
+  final secret = TextEditingController();
+  final tenantId = TextEditingController();
+  final sellerId = TextEditingController();
+  List<String>? verifiedApps;
+
   bool get isApple => provider == StoreProvider.apple;
+  bool get isHuawei => provider == StoreProvider.huawei;
+  bool get isStoreForm => provider == StoreProvider.huawei || provider == StoreProvider.microsoft;
 
   @override
   void initState() {
@@ -72,7 +83,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
 
   @override
   void dispose() {
-    for (final c in [path, keyId, issuerId, accountName, email, teamName, packages]) {
+    for (final c in [path, keyId, issuerId, accountName, email, teamName, packages, clientId, secret, tenantId, sellerId]) {
       c.dispose();
     }
     super.dispose();
@@ -88,7 +99,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
     if (isApple) {
       final connected = {
         for (final t in model.allTeams)
-          if (!t.team.credential.isGoogle) t.team.credential.keyId,
+          if (t.team.credential.store == StoreProvider.apple) t.team.credential.keyId,
       };
       final seen = <String>{};
       found = [
@@ -100,7 +111,7 @@ class _ConnectDialogState extends State<ConnectDialog> {
             return !connected.contains(id) && seen.add(id);
           }),
       ];
-    } else {
+    } else if (provider == StoreProvider.google) {
       clientFiles = _list(p.join(home, 'Downloads')).where((f) {
         final n = p.basename(f);
         return n.startsWith('client_secret_') && n.endsWith('.json');
@@ -130,7 +141,12 @@ class _ConnectDialogState extends State<ConnectDialog> {
       path.clear();
       keyId.clear();
       issuerId.clear();
+      clientId.clear();
+      secret.clear();
+      tenantId.clear();
+      sellerId.clear();
       verified = null;
+      verifiedApps = null;
       error = null;
       _scan();
     });
@@ -260,6 +276,64 @@ class _ConnectDialogState extends State<ConnectDialog> {
     if (mounted) setState(() => verifying = false);
   }
 
+  List<String> get _agcPackages => packages.text.split(RegExp(r'[,\s]+')).map((s) => s.trim()).where((s) => s.contains('.')).toList();
+
+  bool get _storeFilled =>
+      clientId.text.trim().isNotEmpty && secret.text.trim().isNotEmpty && (isHuawei || (tenantId.text.trim().isNotEmpty && sellerId.text.trim().isNotEmpty));
+
+  /// A field changed: what was checked no longer holds.
+  void _storeChanged() => setState(() {
+    verifiedApps = null;
+    error = null;
+  });
+
+  Future<void> _verifyStore() async {
+    final model = ModelScope.read(context);
+    setState(() {
+      verifying = true;
+      error = null;
+    });
+    try {
+      if (isHuawei) {
+        verifiedApps = [for (final a in await model.verifyAppGallery(clientId.text.trim(), secret.text.trim(), _agcPackages)) '${a.name} · ${a.package}'];
+      } else {
+        verifiedApps = [for (final a in await model.verifyMicrosoft(tenantId.text.trim(), clientId.text.trim(), secret.text.trim())) a.name];
+      }
+    } catch (e) {
+      error = describeError(e);
+    }
+    if (mounted) setState(() => verifying = false);
+  }
+
+  Future<void> _connectStore() async {
+    final model = ModelScope.read(context);
+    try {
+      if (isHuawei) {
+        await model.connectAppGallery(
+          accountId: accountChoice,
+          newAccountName: accountName.text.trim(),
+          teamName: teamName.text.trim(),
+          clientId: clientId.text.trim(),
+          secret: secret.text.trim(),
+          packages: _agcPackages,
+        );
+      } else {
+        await model.connectMicrosoft(
+          accountId: accountChoice,
+          newAccountName: accountName.text.trim(),
+          teamName: teamName.text.trim(),
+          tenantId: tenantId.text.trim(),
+          clientId: clientId.text.trim(),
+          sellerId: sellerId.text.trim(),
+          secret: secret.text.trim(),
+        );
+      }
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      setState(() => error = describeError(e));
+    }
+  }
+
   Future<void> _connect() async {
     final model = ModelScope.read(context);
     try {
@@ -321,12 +395,12 @@ class _ConnectDialogState extends State<ConnectDialog> {
                           children: [
                             const Text('Connect a team', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
                             const SizedBox(height: 2),
-                            Text(
-                              isApple
-                                  ? 'One App Store Connect API key per team: Users and Access → Integrations → App Store Connect API.'
-                                  : 'Sign in with the Google account that has Play Console access. Release Desk sees the apps it sees.',
-                              style: TextStyle(fontSize: 13.5, color: t.text2),
-                            ),
+                            Text(switch (provider) {
+                              StoreProvider.apple => 'One App Store Connect API key per team: Users and Access → Integrations → App Store Connect API.',
+                              StoreProvider.google => 'Sign in with the Google account that has Play Console access. Release Desk sees the apps it sees.',
+                              StoreProvider.huawei => 'Huawei AppGallery, with an API client from AppGallery Connect.',
+                              StoreProvider.microsoft => 'The Microsoft Store, with a Microsoft Entra app added to Partner Center.',
+                            }, style: TextStyle(fontSize: 13.5, color: t.text2)),
                           ],
                         ),
                       ),
@@ -334,7 +408,12 @@ class _ConnectDialogState extends State<ConnectDialog> {
                   ),
                   const SizedBox(height: 14),
                   Segmented<StoreProvider>(
-                    items: const [(StoreProvider.apple, 'App Store Connect'), (StoreProvider.google, 'Google Play')],
+                    items: const [
+                      (StoreProvider.apple, 'App Store Connect'),
+                      (StoreProvider.google, 'Google Play'),
+                      (StoreProvider.huawei, 'AppGallery'),
+                      (StoreProvider.microsoft, 'Microsoft Store'),
+                    ],
                     value: provider,
                     expand: true,
                     onChanged: _switch,
@@ -346,7 +425,11 @@ class _ConnectDialogState extends State<ConnectDialog> {
               child: ListView(
                 shrinkWrap: true,
                 padding: const EdgeInsets.fromLTRB(24, 6, 24, 12),
-                children: isApple ? _appleSections(context, model) : _googleSections(context, model),
+                children: isApple
+                    ? _appleSections(context, model)
+                    : isStoreForm
+                    ? _storeSections(context, model)
+                    : _googleSections(context, model),
               ),
             ),
             Divider(height: 1, color: t.hairline),
@@ -357,7 +440,12 @@ class _ConnectDialogState extends State<ConnectDialog> {
                   Icon(Icons.lock_rounded, size: 13, color: t.text2),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text('Keys go to your system keychain, never to a file Release Desk keeps.', style: TextStyle(fontSize: 12, color: t.text2)),
+                    child: Text(
+                      isStoreForm
+                          ? 'The secret goes to your system keychain, never to a file Release Desk keeps.'
+                          : 'Keys go to your system keychain, never to a file Release Desk keeps.',
+                      style: TextStyle(fontSize: 12, color: t.text2),
+                    ),
                   ),
                   TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
                   const SizedBox(width: 8),
@@ -372,6 +460,17 @@ class _ConnectDialogState extends State<ConnectDialog> {
   }
 
   List<Widget> _footerAction(AppModel model) {
+    if (isStoreForm) {
+      return [
+        if (verifiedApps == null)
+          FilledButton.tonal(onPressed: !_storeFilled || verifying ? null : _verifyStore, child: const Text('Verify'))
+        else
+          FilledButton(
+            onPressed: teamName.text.trim().isEmpty || (accountChoice == null && accountName.text.trim().isEmpty) ? null : _connectStore,
+            child: const Text('Connect'),
+          ),
+      ];
+    }
     if (!isApple) {
       return [FilledButton(onPressed: googleUser == null || teamName.text.trim().isEmpty ? null : _connect, child: const Text('Connect'))];
     }
@@ -585,6 +684,142 @@ class _ConnectDialogState extends State<ConnectDialog> {
                     style: TextStyle(fontSize: 12, color: t.text2),
                   ),
                 ),
+              ],
+            ),
+        ]),
+    ];
+  }
+
+  /// AppGallery's API client, or Partner Center's Entra app.
+  List<Widget> _storeSections(BuildContext context, AppModel model) {
+    final t = context.tokens;
+    final accounts = _accounts(model);
+    Widget field(String label, TextEditingController c, String hint, {bool obscure = false}) => _labeled(
+      label,
+      Sensitive(
+        radius: 5,
+        child: Field(controller: c, isMono: true, obscure: obscure, hint: hint, onChanged: (_) => _storeChanged()),
+      ),
+    );
+    final apps = verifiedApps;
+    return [
+      _section(isHuawei ? 'AppGallery Connect API client' : 'Partner Center', [
+        Text(
+          isHuawei
+              ? 'In AppGallery Connect go to Users and permissions → API key → Connect API, and create an API client with Project set to N/A and the Administrator or App administrator role. Only the account holder can make one.'
+              : 'In Partner Center go to Account settings → User management → Microsoft Entra applications, add an app with the Manager role, and make a new key. The Seller ID is under Account settings → Legal info → Developer. The app\'s first submission has to be made in Partner Center.',
+          style: TextStyle(fontSize: 12, color: t.text2),
+        ),
+        if (isHuawei) ...[
+          field('Client ID', clientId, 'e.g. 1234567890123456789'),
+          field('Key', secret, 'Key', obscure: true),
+        ] else ...[
+          field('Tenant ID', tenantId, 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'),
+          field('Client ID', clientId, 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'),
+          field('Client secret', secret, 'Client secret', obscure: true),
+          field('Seller ID', sellerId, 'e.g. 12345678'),
+        ],
+      ]),
+      if (isHuawei)
+        _section('Apps', [
+          Text(
+            "Release Desk lists the team's apps when the API client may read projects. If it can't, name their package names here (you can add more later on the team's page).",
+            style: TextStyle(fontSize: 12, color: t.text2),
+          ),
+          Sensitive(
+            radius: 5,
+            child: Field(
+              controller: packages,
+              isMono: true,
+              minLines: 2,
+              maxLines: 4,
+              hint: 'com.example.app, com.example.other',
+              onChanged: (_) => _storeChanged(),
+            ),
+          ),
+        ]),
+      _section('Where it belongs', [
+        _labeled(
+          'Account',
+          Align(
+            alignment: Alignment.centerLeft,
+            child: DropdownButton<String?>(
+              value: accountChoice,
+              isDense: true,
+              underline: const SizedBox(),
+              style: Theme.of(context).textTheme.bodyMedium!.copyWith(fontSize: 13.5, color: t.text),
+              borderRadius: BorderRadius.circular(10),
+              items: [
+                for (final a in accounts)
+                  DropdownMenuItem(
+                    value: a.id,
+                    child: Sensitive(radius: 5, child: Text(a.name)),
+                  ),
+                const DropdownMenuItem(value: null, child: Text('New account…')),
+              ],
+              onChanged: (v) => setState(() => accountChoice = v),
+            ),
+          ),
+        ),
+        if (accountChoice == null)
+          _labeled(
+            'Account name',
+            Sensitive(
+              radius: 5,
+              child: Field(
+                controller: accountName,
+                hint: isHuawei ? 'e.g. Huawei developer account' : 'e.g. Partner Center',
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+          ),
+        _labeled(
+          isHuawei ? 'Team name' : 'Account label',
+          Sensitive(
+            radius: 5,
+            child: Field(controller: teamName, hint: 'e.g. Client team', onChanged: (_) => setState(() {})),
+          ),
+        ),
+      ]),
+      if (verifying || apps != null || error != null)
+        _section('Check', [
+          if (verifying)
+            Row(
+              children: [
+                const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.8)),
+                const SizedBox(width: 10),
+                Text(isHuawei ? 'Asking AppGallery Connect…' : 'Asking Partner Center…', style: TextStyle(color: t.text2)),
+              ],
+            )
+          else if (error != null)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.cancel_rounded, size: 18, color: Palette.ember),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(error!, style: TextStyle(color: Palette.ember)),
+                ),
+              ],
+            )
+          else if (apps != null)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.verified_rounded, size: 18, color: Palette.mint),
+                    const SizedBox(width: 8),
+                    Text(
+                      apps.isEmpty ? 'It works. No apps found yet.' : 'It works · ${counted(apps.length, 'app')}',
+                      style: TextStyle(color: Palette.mint, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+                if (apps.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 6, runSpacing: 6, children: [for (final a in apps) Tag(a, icon: Icons.apps_rounded, sensitive: true)]),
+                ],
               ],
             ),
         ]),

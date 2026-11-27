@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 
+import '../core/app_gallery.dart';
 import '../core/asc.dart';
 import '../core/asc_key.dart';
 import '../core/errors.dart';
@@ -12,6 +13,7 @@ import '../core/flutter_project.dart';
 import '../core/github.dart';
 import '../core/google.dart';
 import '../core/json.dart';
+import '../core/microsoft_store.dart';
 import '../core/shell.dart';
 import '../core/play.dart';
 import '../core/release_run.dart';
@@ -58,6 +60,8 @@ class TeamState {
 class AppState {
   List<PlayTrack> tracks = [];
   PlayAppDetails? play;
+  AgcApp? agc;
+  MsApp? ms;
   List<AscBuild> builds = [];
   List<AscBetaGroup> groups = [];
   List<AscVersion> versions = [];
@@ -110,7 +114,12 @@ class AppModel extends ChangeNotifier {
 
   final _asc = <String, AscClient>{};
   final _play = <String, PlayClient>{};
+  final _agc = <String, AppGalleryClient>{};
+  final _ms = <String, MicrosoftStoreClient>{};
   final _appTeam = <String, String>{};
+
+  /// AppGallery's own app ids, by Release Desk app id (`agc:<package>`).
+  final agcAppIds = <String, String>{};
   Timer? _settingsTimer;
 
   void go(AppRoute r) {
@@ -172,13 +181,22 @@ class AppModel extends ChangeNotifier {
   AppState appState(String id) => apps.putIfAbsent(id, AppState.new);
 
   String? iconUrl(String appId, [int size = 256]) {
+    final store = StoreProvider.of(appId);
+    if (store == StoreProvider.huawei || store == StoreProvider.microsoft) {
+      // AppGallery and Partner Center show no icon; the same app on the App Store or Play lends its own.
+      final pkg = app(appId)?.bundleId ?? '';
+      for (final twin in allApps) {
+        if (twin.bundleId == pkg && (twin.store == StoreProvider.apple || twin.store == StoreProvider.google)) return iconUrl(twin.id, size);
+      }
+      return null;
+    }
     if (appId.startsWith('play:')) {
       final u = apps[appId]?.play?.iconUrl ?? icons[appId];
       if (u != null) return '$u=s$size';
       // The same app on the App Store lends its icon.
       final pkg = appId.substring(5);
       for (final twin in allApps) {
-        if (!twin.isPlay && twin.bundleId == pkg) return iconUrl(twin.id, size);
+        if (twin.store == StoreProvider.apple && twin.bundleId == pkg) return iconUrl(twin.id, size);
       }
       return null;
     }
@@ -211,7 +229,7 @@ class AppModel extends ChangeNotifier {
     final c = _asc[team.id];
     if (c != null) return c;
     final cred = team.credential;
-    if (cred.isGoogle) throw ReleaseError.precondition('${team.name} is not an App Store Connect team');
+    if (cred.store != StoreProvider.apple) throw ReleaseError.precondition('${team.name} is not an App Store Connect team');
     final pem = await secrets.read(cred.secretKey);
     if (pem == null) throw ReleaseError.precondition('The key for ${team.name} is not in the keychain any more. Remove the team and connect it again.');
     return _asc[team.id] = AscClient(AscKey(keyId: cred.keyId!, issuerId: cred.issuerId!, pem: pem));
@@ -225,6 +243,28 @@ class AppModel extends ChangeNotifier {
     return _play[team.id] = PlayClient(GoogleUser.fromJson((jsonDecode(json) as Map).cast<String, Object?>()));
   }
 
+  Future<AppGalleryClient> agcClient(Team team) async {
+    final c = _agc[team.id];
+    if (c != null) return c;
+    final cred = team.credential;
+    if (cred.store != StoreProvider.huawei) throw ReleaseError.precondition('${team.name} is not an AppGallery team');
+    final secret = await secrets.read(cred.secretKey);
+    if (secret == null) throw ReleaseError.precondition('The key for ${team.name} is not in the keychain any more. Remove the team and connect it again.');
+    return _agc[team.id] = AppGalleryClient(clientId: cred.clientId!, secret: secret);
+  }
+
+  Future<MicrosoftStoreClient> msClient(Team team) async {
+    final c = _ms[team.id];
+    if (c != null) return c;
+    final cred = team.credential;
+    if (cred.store != StoreProvider.microsoft) throw ReleaseError.precondition('${team.name} is not a Partner Center account');
+    final secret = await secrets.read(cred.secretKey);
+    if (secret == null) {
+      throw ReleaseError.precondition('The client secret for ${team.name} is not in the keychain any more. Remove the account and connect it again.');
+    }
+    return _ms[team.id] = MicrosoftStoreClient(tenantId: cred.tenantId!, clientId: cred.clientId!, secret: secret);
+  }
+
   Future<AscClient> ascClientForApp(String id) async {
     final t = teamOfApp(id);
     if (t == null) throw const ReleaseError.precondition('No team for this app');
@@ -236,7 +276,16 @@ class AppModel extends ChangeNotifier {
   Future<void> refreshAll() => Future.wait([for (final t in allTeams) refreshTeam(t.team)]);
 
   Future<void> refreshTeam(Team team) async {
-    if (team.credential.isGoogle) return _refreshPlay(team);
+    switch (team.credential.store) {
+      case StoreProvider.google:
+        return _refreshPlay(team);
+      case StoreProvider.huawei:
+        return _refreshAppGallery(team);
+      case StoreProvider.microsoft:
+        return _refreshMicrosoft(team);
+      case StoreProvider.apple:
+        break;
+    }
     final s = teams.putIfAbsent(team.id, TeamState.new)..loading = true;
     notifyListeners();
     try {
@@ -331,10 +380,155 @@ class AppModel extends ChangeNotifier {
     }
   }
 
+  // MARK: AppGallery
+
+  Future<void> _refreshAppGallery(Team team) async {
+    final s = teams.putIfAbsent(team.id, TeamState.new)..loading = true;
+    notifyListeners();
+    try {
+      final c = await agcClient(team);
+      final found = <String, ({String appId, String name})>{};
+      // Every app of the team when the API client may read projects; else the packages named.
+      try {
+        for (final a in await c.allApps()) {
+          found[a.package] = (appId: a.appId, name: a.name);
+        }
+      } catch (_) {}
+      final named = team.packages.where((p) => !found.containsKey(p)).toList();
+      if (named.isNotEmpty) found.addAll(await c.appIds(named));
+      final packages = found.keys.toList()..sort();
+      var list = [for (final pkg in packages) StoreApp(id: 'agc:$pkg', name: found[pkg]!.name, bundleId: pkg)];
+      for (final a in list) {
+        _appTeam[a.id] = team.id;
+        agcAppIds[a.id] = found[a.bundleId]!.appId;
+      }
+      s
+        ..apps = list
+        ..error = team.packages.isEmpty && found.isEmpty ? "No apps yet. Add their package names on this team's page." : null;
+      notifyListeners();
+      final results = await Future.wait(
+        list.map((a) async {
+          try {
+            return (a.id, await c.app(found[a.bundleId]!.appId, a.bundleId), null);
+          } catch (e) {
+            return (a.id, null, e);
+          }
+        }),
+      );
+      for (final (id, info, e) in results) {
+        final st = appState(id);
+        if (info != null) {
+          st
+            ..agc = info
+            ..error = null
+            ..detailed = true;
+          list = [for (final a in list) a.id == id ? a.copyWith(name: info.name) : a];
+        } else if (e != null) {
+          st.error = describeError(e);
+        }
+      }
+      s
+        ..apps = list
+        ..refreshed = DateTime.now();
+    } catch (e) {
+      s.error = describeError(e);
+    } finally {
+      s.loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Checks an API client without saving anything: the token, then the apps it sees.
+  Future<List<({String package, String name})>> verifyAppGallery(String clientId, String secret, List<String> packages) async {
+    final c = AppGalleryClient(clientId: clientId, secret: secret);
+    try {
+      final found = <String, String>{};
+      try {
+        for (final a in await c.allApps()) {
+          found[a.package] = a.name;
+        }
+      } catch (_) {}
+      final named = packages.where((p) => !found.containsKey(p)).toList();
+      if (named.isNotEmpty) {
+        for (final e in (await c.appIds(named)).entries) {
+          found[e.key] = e.value.name;
+        }
+      }
+      if (found.isEmpty && packages.isEmpty) await c.appIds(['com.example.check']);
+      final keys = found.keys.toList()..sort();
+      return [for (final k in keys) (package: k, name: found[k]!)];
+    } finally {
+      c.close();
+    }
+  }
+
+  Future<void> connectAppGallery({
+    String? accountId,
+    required String newAccountName,
+    required String teamName,
+    required String clientId,
+    required String secret,
+    required List<String> packages,
+  }) async {
+    final cred = Credential.agcClient(clientId: clientId);
+    await secrets.write(cred.secretKey, secret);
+    _add(Team(name: teamName, credential: cred, packages: packages), StoreProvider.huawei, accountId, newAccountName, null);
+  }
+
+  // MARK: Microsoft Store
+
+  Future<void> _refreshMicrosoft(Team team) async {
+    final s = teams.putIfAbsent(team.id, TeamState.new)..loading = true;
+    notifyListeners();
+    try {
+      final c = await msClient(team);
+      final found = await c.applications();
+      final list = [for (final m in found) StoreApp(id: 'msstore:${m.id}', name: m.name, bundleId: m.packageIdentityName)];
+      for (final (i, a) in list.indexed) {
+        _appTeam[a.id] = team.id;
+        final st = appState(a.id);
+        if (!st.detailed) st.ms = found[i];
+      }
+      s
+        ..apps = list
+        ..error = list.isEmpty ? 'Partner Center lists no apps for this account.' : null
+        ..refreshed = DateTime.now();
+    } catch (e) {
+      s.error = describeError(e);
+    } finally {
+      s.loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Checks Partner Center credentials without saving anything; returns the apps.
+  Future<List<MsApp>> verifyMicrosoft(String tenantId, String clientId, String secret) async {
+    final c = MicrosoftStoreClient(tenantId: tenantId, clientId: clientId, secret: secret);
+    try {
+      return await c.applications();
+    } finally {
+      c.close();
+    }
+  }
+
+  Future<void> connectMicrosoft({
+    String? accountId,
+    required String newAccountName,
+    required String teamName,
+    required String tenantId,
+    required String clientId,
+    required String sellerId,
+    required String secret,
+  }) async {
+    final cred = Credential.partnerCenter(tenantId: tenantId, clientId: clientId, sellerId: sellerId);
+    await secrets.write(cred.secretKey, secret);
+    _add(Team(name: teamName, teamId: sellerId, credential: cred), StoreProvider.microsoft, accountId, newAccountName, null);
+  }
+
   /// Before Play gives a title, the App Store twin names the app.
   String _knownName(String package) {
     for (final a in allApps) {
-      if (!a.isPlay && a.bundleId == package) return a.name;
+      if (a.store == StoreProvider.apple && a.bundleId == package) return a.name;
     }
     for (final a in allApps) {
       if (a.isPlay && a.bundleId == package && a.name != package) return a.name;
@@ -352,10 +546,27 @@ class AppModel extends ChangeNotifier {
   Future<void> refreshApp(String appId) async {
     final team = teamOfApp(appId);
     if (team == null) return;
+    // An AppGallery app is read by AppGallery's own id, known once its team is listed.
+    final agcId = agcAppIds[appId];
+    if (StoreProvider.of(appId) == StoreProvider.huawei && agcId == null) return;
     final st = appState(appId)..loading = true;
     notifyListeners();
     try {
-      if (appId.startsWith('play:')) {
+      if (agcId != null) {
+        final c = await agcClient(team);
+        st
+          ..agc = await c.app(agcId, app(appId)?.bundleId ?? appId.substring(4))
+          ..error = null
+          ..refreshed = DateTime.now()
+          ..detailed = true;
+      } else if (StoreProvider.of(appId) == StoreProvider.microsoft) {
+        final c = await msClient(team);
+        st
+          ..ms = await c.details(appId.substring('msstore:'.length))
+          ..error = null
+          ..refreshed = DateTime.now()
+          ..detailed = true;
+      } else if (appId.startsWith('play:')) {
         final c = await playClient(team);
         final o = await c.overview(appId.substring(5));
         st
@@ -457,6 +668,8 @@ class AppModel extends ChangeNotifier {
     await secrets.delete(team.credential.secretKey);
     _asc.remove(team.id)?.close();
     _play.remove(team.id)?.close();
+    _agc.remove(team.id)?.close();
+    _ms.remove(team.id)?.close();
     teams.remove(team.id);
     for (final a in workspace.accounts) {
       a.teams.removeWhere((t) => t.id == team.id);
@@ -509,7 +722,7 @@ class AppModel extends ChangeNotifier {
         final proj = FlutterProject.inspect(path);
         final ids = {proj.iosBundleId, proj.androidPackage}.whereType<String>().toSet();
         for (final twin in allApps) {
-          if (twin.id != appId && ids.contains(twin.bundleId) && twin.isPlay != a.isPlay && workspace.link(twin.id) == null) set(twin.id);
+          if (twin.id != appId && ids.contains(twin.bundleId) && twin.store != a.store && workspace.link(twin.id) == null) set(twin.id);
         }
       } catch (_) {}
     }
@@ -531,13 +744,30 @@ class AppModel extends ChangeNotifier {
   }
 
   Future<ReleaseRun> launch(ReleasePlan plan) async {
-    final team = teamOfApp(plan.app.id);
-    if (team == null) throw const ReleaseError.precondition('No team for this app');
     final ReleaseRun run;
-    if (plan.platform == ReleasePlatform.android) {
-      run = ReleaseRun(plan: plan, logsDir: logsDir, playClient: await playClient(team), github: plan.cloud != null ? github : null);
-    } else {
-      run = ReleaseRun(plan: plan, logsDir: logsDir, apple: await ascClient(team), github: github);
+    switch (plan.platform) {
+      case ReleasePlatform.windows:
+        final team = teamOfApp(plan.app.id);
+        if (team == null) throw const ReleaseError.precondition('No Partner Center account for this app');
+        run = ReleaseRun(plan: plan, logsDir: logsDir, microsoft: await msClient(team), github: plan.cloud != null ? github : null);
+      case ReleasePlatform.android:
+        // One build to Google Play, AppGallery or both: the same package on each store.
+        final pkg = plan.app.bundleId;
+        final playTeam = plan.play == null ? null : teamOfApp('play:$pkg');
+        final agcTeam = plan.appGallery == null ? null : teamOfApp('agc:$pkg');
+        if (plan.play != null && playTeam == null) throw ReleaseError.precondition('No Google Play account for $pkg');
+        if (plan.appGallery != null && agcTeam == null) throw ReleaseError.precondition('No AppGallery account for $pkg');
+        run = ReleaseRun(
+          plan: plan,
+          logsDir: logsDir,
+          playClient: playTeam == null ? null : await playClient(playTeam),
+          appGallery: agcTeam == null ? null : await agcClient(agcTeam),
+          github: plan.cloud != null ? github : null,
+        );
+      case ReleasePlatform.ios:
+        final team = teamOfApp(plan.app.id);
+        if (team == null) throw const ReleaseError.precondition('No team for this app');
+        run = ReleaseRun(plan: plan, logsDir: logsDir, apple: await ascClient(team), github: github);
     }
     run.onFinish = _finished;
     var lastPhase = run.phase;
@@ -601,9 +831,24 @@ class AppModel extends ChangeNotifier {
     unawaited(refreshApp(run.plan.app.id));
   }
 
-  /// Puts the team's App Store Connect key, or the project's Android upload
-  /// key, into the repository's Actions secrets so the workflow can sign.
+  /// Puts the team's App Store Connect key, the project's Android upload
+  /// key, or the Partner Center client into the repository's Actions secrets
+  /// so the workflow can sign or publish.
   Future<void> setCloudSecrets(String appId, GitHubRepo repo, CloudTarget target, String projectRoot) async {
+    if (target == CloudTarget.windows) {
+      final team = teamOfApp(appId);
+      final cred = team?.credential;
+      if (team == null || cred == null || cred.store != StoreProvider.microsoft) {
+        throw const ReleaseError.precondition('This app has no Partner Center account');
+      }
+      final secret = await secrets.read(cred.secretKey);
+      if (secret == null) throw const ReleaseError.precondition('The client secret is not in the keychain any more.');
+      await github.setSecret('MS_TENANT_ID', cred.tenantId!, repo);
+      await github.setSecret('MS_SELLER_ID', cred.sellerId!, repo);
+      await github.setSecret('MS_CLIENT_ID', cred.clientId!, repo);
+      await github.setSecret('MS_CLIENT_SECRET', secret, repo);
+      return;
+    }
     if (target == CloudTarget.android) {
       final proj = FlutterProject.inspect(projectRoot);
       final props = proj.keyProperties();
@@ -625,7 +870,7 @@ class AppModel extends ChangeNotifier {
     }
     final team = teamOfApp(appId);
     final cred = team?.credential;
-    if (team == null || cred == null || cred.isGoogle) throw const ReleaseError.precondition('This app has no App Store Connect key');
+    if (team == null || cred == null || cred.store != StoreProvider.apple) throw const ReleaseError.precondition('This app has no App Store Connect key');
     final pem = await secrets.read(cred.secretKey);
     if (pem == null) throw const ReleaseError.precondition('The key is not in the keychain any more.');
     await github.setSecret('ASC_KEY_ID', cred.keyId!, repo);
